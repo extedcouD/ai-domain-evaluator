@@ -1,0 +1,30 @@
+{
+  "name": "@evaluator/studio",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local browser tool to author the KB manifest (folder-first) and view/compare coverage. A zero-dependency node:http API plus a Vite + React UI.",
+  "exports": {
+    ".": "./src/server.ts",
+    "./manifest-folder": "./src/manifest-folder.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/dev.ts",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@evaluator/core": "workspace:*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "jsdom": "^25.0.1",
+    "vite": "^7.1.5"
+  }
+}

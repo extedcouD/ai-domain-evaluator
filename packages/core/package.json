@@ -1,0 +1,30 @@
+{
+  "name": "@evaluator/core",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The vendor- and domain-neutral evaluation harness: the Llm/KnowledgeSource/Judge seams, the Run event machinery, schema sanitization, and the coverage/validate/rollup probes. Names no model, no vendor, no domain.",
+  "license": "MIT",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
+}

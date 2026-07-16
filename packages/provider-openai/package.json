@@ -1,0 +1,31 @@
+{
+  "name": "@evaluator/provider-openai",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "OpenAI-compatible transport adapter for @evaluator/core. Implements the Llm seam against any /v1 endpoint (LM Studio, vLLM, Ollama, llama.cpp, a hosted API). The only package permitted to import the OpenAI SDK.",
+  "license": "MIT",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@evaluator/core": "workspace:*",
+    "openai": "^6.46.0"
+  }
+}

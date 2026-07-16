@@ -1,0 +1,23 @@
+{
+  "name": "@evaluator/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The scripted front-end: --health, --check-schema, --coverage, --validate, and one-shot prose. Reads the environment, selects a provider, and drives the core probes.",
+  "bin": {
+    "evaluator": "./src/cli.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@evaluator/core": "workspace:*",
+    "@evaluator/provider-anthropic": "workspace:*",
+    "@evaluator/provider-openai": "workspace:*",
+    "@evaluator/reporter": "workspace:*",
+    "@evaluator/studio": "workspace:*",
+    "dotenv": "^17.4.2",
+    "yaml": "^2.9.0"
+  }
+}

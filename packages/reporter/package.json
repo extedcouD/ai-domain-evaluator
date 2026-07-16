@@ -1,0 +1,30 @@
+{
+  "name": "@evaluator/reporter",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "A structured-logging sink over the @evaluator/core event stream: zero-dependency JSONL + pretty console. The event is the log record; the engine holds no logger.",
+  "license": "MIT",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@evaluator/core": "workspace:*"
+  }
+}

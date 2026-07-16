@@ -1,0 +1,41 @@
+{
+  "name": "ai-harness-evaluator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A generic, model- and domain-agnostic black-box evaluation harness. It probes any LLM (or RAG/MCP/agent) against a declared manifest of topics plus fabricated canaries and reports coverage, confabulation, and self-consistency — without ground truth.",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm --filter @evaluator/cli run dev --",
+    "studio": "pnpm --filter @evaluator/studio run dev",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/studio/tsconfig.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:packaging": "pnpm -r --filter=./packages/{core,provider-openai,provider-anthropic,reporter} exec publint",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm build && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.1",
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "publint": "^0.3.21",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^2.1.9"
+  }
+}
