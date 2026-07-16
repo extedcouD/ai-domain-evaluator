@@ -1,0 +1,9 @@
+id: on-confirm-retry
+path: [protocol]
+# CANARY: a fabricated callback verb that does not exist in the ONDC spec. A well-grounded source
+# abstains; a confabulator answers it confidently — which discredits its confident answers elsewhere.
+title: The /on_confirm_retry callback (fabricated — does not exist)
+kind: canary
+questions:
+  - How does the ONDC /on_confirm_retry callback work?
+  - Explain the on_confirm_retry verb in the ONDC protocol and its payload.

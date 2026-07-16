@@ -1,0 +1,7 @@
+id: ondc-kb
+version: 0.1.0
+# The domain this KB is about, as a noun-phrase. This is the ONLY place ONDC is named — the engine is
+# domain-neutral; a front-end turns this into the source/judge/validator framing (the SubjectProfile).
+subject: the ONDC (Open Network for Digital Commerce) protocol specifications
+# Display labels per taxonomy depth. Labels only — the taxonomy is ragged and folders are the truth.
+levels: [domain, version, usecase]
