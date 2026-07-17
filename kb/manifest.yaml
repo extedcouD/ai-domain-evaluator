@@ -10,42 +10,20 @@ levels:
   - version
   - usecase
 topics:
-  - id: auth-header
+  - id: protocol
     path:
-      - protocol
-    title: The Authorization header signing
+      - ondc
+    title: protocol
     questions:
-      - How is the ONDC Authorization header constructed and signed?
-      - Explain ONDC request signing with the ed25519 signature and the
-        Authorization header.
+      - What is ONDC ?
+      - Can you tell me open about open network for digital commerce ?
     kind: real
-  - id: on-confirm-retry
+  - id: protocol-copy
     path:
-      - protocol
-    title: The /on_confirm_retry callback (fabricated — does not exist)
+      - ondc
+    title: protocol
     questions:
-      - How does the ONDC /on_confirm_retry callback work?
-      - Explain the on_confirm_retry verb in the ONDC protocol and its payload.
-    kind: canary
-  - id: on-search
-    path:
-      - retail
-      - 1.2.0
-      - search
-    title: The /search request and on_search callback
-    questions:
-      - In ONDC retail, what does a BAP send in a /search request and what does
-        on_search return?
-      - Explain the ONDC /search and on_search flow for the retail domain.
-      - What is the structure of an ONDC on_search catalog response?
-    kind: real
-  - id: on-select
-    path:
-      - retail
-      - 1.2.0
-      - select
-    title: The /select request and on_select quote
-    questions:
-      - What does the ONDC /select call do, and what does on_select return?
-      - Explain the ONDC select stage and the quote carried in on_select.
+      - What is ONDC ?
+      - Can you tell me open about open network for digital commerce ?
+      - what is open about open network for digital commerce ?
     kind: real

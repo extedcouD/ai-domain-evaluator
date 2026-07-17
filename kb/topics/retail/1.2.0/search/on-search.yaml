@@ -1,8 +1,0 @@
-id: on-search
-path: [retail, 1.2.0, search]
-title: The /search request and on_search callback
-kind: real
-questions:
-  - In ONDC retail, what does a BAP send in a /search request and what does on_search return?
-  - Explain the ONDC /search and on_search flow for the retail domain.
-  - What is the structure of an ONDC on_search catalog response?

@@ -6,15 +6,18 @@
  */
 import { useEffect, useState, type Dispatch } from "react";
 
+import { suggestLevelLabels } from "../derive";
 import type { Action, View } from "../state";
-import type { Manifest } from "../types";
+import type { Manifest, NodeInfo } from "../types";
 
 function IdentityPanel({
   manifest,
+  nodes,
   onSaveMeta,
   onExport,
 }: {
   manifest: Manifest | null;
+  nodes: NodeInfo[];
   onSaveMeta: (id: string, version: string, subject: string, levels: string[]) => void;
   onExport: () => void;
 }): React.JSX.Element {
@@ -31,10 +34,17 @@ function IdentityPanel({
     setLevels(manifest?.levels ?? []);
   }, [manifest]);
 
+  // Auto-labels derived from the folder taxonomy: prefer the full node list (includes empty folders);
+  // fall back to topic paths when nodes haven't loaded. Labels are display-only, so this only seeds the
+  // form — nothing persists until "Save identity".
+  const folderPaths = nodes.length > 0 ? nodes.map((n) => n.path) : (manifest?.topics ?? []).map((t) => t.path);
+  const suggested = suggestLevelLabels(folderPaths);
+
   return (
     <details className="identity-panel">
-      <summary className="icon-btn">Manifest ▾</summary>
+      <summary className="btn btn-secondary sm">Manifest ▾</summary>
       <div className="identity-body">
+        <h6>Manifest identity</h6>
         <label>id</label>
         <input className="f" value={id} onChange={(e) => setId(e.target.value)} />
         <label>version</label>
@@ -48,27 +58,40 @@ function IdentityPanel({
           onChange={(e) => setSubject(e.target.value)}
         />
 
-        <label>level labels</label>
-        {levels.map((l, i) => (
-          <div className="id-line" key={i}>
-            <input
-              className="f"
-              placeholder={`level ${String(i + 1)}`}
-              value={l}
-              onChange={(e) => setLevels(levels.map((x, j) => (j === i ? e.target.value : x)))}
-            />
-            <button className="mini" type="button" title="Remove level" onClick={() => setLevels(levels.filter((_, j) => j !== i))}>
-              ✕
-            </button>
-          </div>
-        ))}
+        <div className="id-line" style={{ justifyContent: "space-between", marginBottom: 2 }}>
+          <label style={{ margin: 0 }}>level labels</label>
+          <button
+            className="btn ghost sm"
+            type="button"
+            title="Fill one label per taxonomy depth from the current folder structure (editable)"
+            disabled={suggested.length === 0}
+            onClick={() => setLevels(suggested)}
+          >
+            ⣿ From folders
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+          {levels.map((l, i) => (
+            <div className="id-line" key={i} style={{ width: "100%" }}>
+              <input
+                className="f"
+                placeholder={`level ${String(i + 1)}`}
+                value={l}
+                onChange={(e) => setLevels(levels.map((x, j) => (j === i ? e.target.value : x)))}
+              />
+              <button className="mini" type="button" title="Remove level" onClick={() => setLevels(levels.filter((_, j) => j !== i))}>
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
         <button className="btn ghost sm" type="button" onClick={() => setLevels([...levels, ""])}>
           ＋ Add level label
         </button>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
           <button
-            className="btn subtle sm"
+            className="btn-primary btn sm"
             type="button"
             onClick={() => onSaveMeta(id.trim(), version.trim(), subject.trim(), levels.map((l) => l.trim()).filter(Boolean))}
           >
@@ -89,39 +112,71 @@ function IdentityPanel({
 export function Header(props: {
   view: View;
   manifest: Manifest | null;
+  nodes: NodeInfo[];
   theme: "light" | "dark" | null;
   dispatch: Dispatch<Action>;
   onSaveMeta: (id: string, version: string, subject: string, levels: string[]) => void;
   onExport: () => void;
 }): React.JSX.Element {
   const { view, manifest, dispatch } = props;
+  const topicCount = manifest?.topics.length ?? 0;
+  const dateRight = view === "coverage" ? "Coverage run" : `Authoring · ${String(topicCount)} topics`;
   return (
     <header className="topbar">
-      <div className="brand">KB STUDIO</div>
-      <div className="manifest-id">{manifest ? `${manifest.id}@${manifest.version}` : "…"}</div>
-      {manifest?.subject ? <div className="manifest-subject">{manifest.subject}</div> : null}
-      <div className="spacer" />
-      <div className="view-switch">
-        {(["author", "coverage"] as const).map((v) => (
+      <div className="topbar-row">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M8 1.7 14.3 5 8 8.3 1.7 5 8 1.7Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+              <path d="M2.4 8 8 11 13.6 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M2.4 11 8 14 13.6 11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+          <h1 className="brand-word">KB Studio</h1>
+        </div>
+        <div className="topbar-actions">
+          <div className="view-switch">
+            {(["author", "coverage"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                className={`seg${view === v ? " active" : ""}`}
+                onClick={() => dispatch({ type: "setView", view: v })}
+              >
+                {v === "author" ? "Author" : "Coverage"}
+              </button>
+            ))}
+          </div>
+          <IdentityPanel manifest={manifest} nodes={props.nodes} onSaveMeta={props.onSaveMeta} onExport={props.onExport} />
           <button
-            key={v}
+            className="icon-btn"
             type="button"
-            className={`seg${view === v ? " active" : ""}`}
-            onClick={() => dispatch({ type: "setView", view: v })}
+            title="Toggle theme"
+            onClick={() => dispatch({ type: "setTheme", theme: props.theme === "dark" ? "light" : "dark" })}
           >
-            {v}
+            ◑
           </button>
-        ))}
+        </div>
       </div>
-      <IdentityPanel manifest={manifest} onSaveMeta={props.onSaveMeta} onExport={props.onExport} />
-      <button
-        className="icon-btn"
-        type="button"
-        title="Toggle theme"
-        onClick={() => dispatch({ type: "setTheme", theme: props.theme === "dark" ? "light" : "dark" })}
-      >
-        ◑
-      </button>
+
+      <div className="topbar-rule" />
+      <div className="dateline">
+        <span className="manifest-id">
+          {manifest?.id ?? "…"}
+          <span className="ver">@{manifest?.version ?? "?"}</span>
+        </span>
+        {manifest?.subject ? (
+          <>
+            <span className="dateline-sep">·</span>
+            <span className="manifest-subject">{manifest.subject}</span>
+          </>
+        ) : (
+          <span className="spacer" />
+        )}
+        <span className="dateline-sep">·</span>
+        <span className="dateline-right">{dateRight}</span>
+      </div>
+      <div className="topbar-divider" />
     </header>
   );
 }

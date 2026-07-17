@@ -1,9 +1,9 @@
 /**
  * CoverageView — the read-only instrument panel. A run picker (A, plus an optional B for compare).
  *
- *   Single report: four headline gauges (grounded/refused/inconsistent + a prominent CANARY-BITE
- *   alarm), caveats, judge warnings, the per-level drill-down (CoverageTreeGauges), and a per-topic
- *   table grouped by path.
+ *   Single report: a canary-bite banner (a pure-CSS CMYK-misregistration number treatment) when the
+ *   canary bite rate is above zero, totals, four headline gauges, the per-level drill-down
+ *   (CoverageTreeGauges), a per-topic table grouped by path, and a caveats/judge-warning note.
  *
  *   Compare (A vs B): metric deltas (▲/▼ points, a rising canary-bite flagged as a REGRESSION) and
  *   per-topic status transitions joined by `topicKey`, grouped by path. Framed as tracking coverage &
@@ -39,66 +39,109 @@ function groupResults(topics: TopicResult[]): { path: string[]; topics: TopicRes
   return out;
 }
 
+function BiteNumber({ text }: { text: string }): React.JSX.Element {
+  return (
+    <div className="cmyk-num" aria-label={text}>
+      <span className="paper">{text}</span>
+      <span className="plate plate-c" aria-hidden="true">
+        {text}
+      </span>
+      <span className="plate plate-m" aria-hidden="true">
+        {text}
+      </span>
+      <span className="plate plate-y" aria-hidden="true">
+        {text}
+      </span>
+    </div>
+  );
+}
+
 function Footer({ report }: { report: CoverageReportWithTree }): React.JSX.Element {
   return (
     <div className="foot">
       {report.judge && !report.judge.schemaEnforced ? (
         <div className="banner warn">Judge schema NOT enforced — verdicts ran blind, so read them with suspicion.</div>
       ) : null}
-      <b>Caveats</b>
-      <ul>{report.caveats.map((c, i) => <li key={i}>{c}</li>)}</ul>
+      <b>Caveats.</b>{" "}
+      Without ground truth, "grounded" means self-consistent and refused-when-fabricated — not correct. The canary
+      bite-rate survives a weak judge; agreement scores below 0.6 ran on a heuristic fallback.
+      {report.caveats.length ? (
+        <ul>
+          {report.caveats.map((c, i) => (
+            <li key={i}>{c}</li>
+          ))}
+        </ul>
+      ) : null}
       {report.judge.warnings.length ? (
         <>
           <b>Judge warnings</b>
-          <ul>{report.judge.warnings.map((w, i) => <li key={i}>⚠ {w}</li>)}</ul>
+          <ul>
+            {report.judge.warnings.map((w, i) => (
+              <li key={i}>⚠ {w}</li>
+            ))}
+          </ul>
         </>
       ) : null}
     </div>
   );
 }
 
-function SingleReport({ report }: { report: CoverageReportWithTree }): React.JSX.Element {
+function SingleReport({ report, levels }: { report: CoverageReportWithTree; levels: string[] }): React.JSX.Element {
   const { metrics: m, totals: t } = report;
   return (
     <>
-      <div className="card">
-        {m.canaryBiteRate > 0 ? (
-          <div className="banner alarm">
-            ⚠ CANARY BITE {pct(m.canaryBiteRate)} — the source confidently answered a fabricated topic. Its confident
-            answers elsewhere are suspect.
+      {m.canaryBiteRate > 0 ? (
+        <div className="bite-banner">
+          <BiteNumber text={pct(m.canaryBiteRate)} />
+          <div>
+            <h4>Canary bite</h4>
+            <p>
+              The source confidently answered a <b>fabricated</b> topic a grounded source would refuse. Its confident
+              answers elsewhere are suspect.
+            </p>
           </div>
-        ) : null}
-        <div className="totals">
-          <span><b>{t.topics}</b> topics</span>
-          <span><b>{t.real}</b> real</span>
-          <span><b>{t.canary}</b> canary</span>
-          <span>source <b>{report.source || "?"}</b></span>
-          <span>{report.generatedAt ?? ""}</span>
         </div>
-        <Gauges metrics={m} defs={METRICS} />
+      ) : null}
+
+      <div className="totals">
+        <span>
+          <b>{t.topics}</b> topics
+        </span>
+        <span>
+          <b>{t.real}</b> real
+        </span>
+        <span>
+          <b>{t.canary}</b> canary
+        </span>
+        <span>
+          source <b>{report.source || "?"}</b>
+        </span>
+        <span style={{ color: "var(--color-neutral-500)" }}>{report.generatedAt ?? ""}</span>
       </div>
 
-      {report.tree ? <CoverageTreeGauges tree={report.tree} /> : null}
+      <Gauges metrics={m} defs={METRICS} />
 
-      <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>id</th>
-              <th>title / sample</th>
-              <th>kind</th>
-              <th>status / detail</th>
-              <th>agree</th>
-            </tr>
-          </thead>
-          <tbody>
-            {groupResults(report.topics).map((g) => (
-              <ReportGroup key={pathKey(g.path)} path={g.path} topics={g.topics} />
-            ))}
-          </tbody>
-        </table>
-        <Footer report={report} />
-      </div>
+      {report.tree ? <CoverageTreeGauges tree={report.tree} levels={levels} /> : null}
+
+      <h6 style={{ color: "var(--color-neutral-600)", margin: "0 0 10px" }}>Per-topic detail</h6>
+      <table className="table" style={{ marginBottom: 22 }}>
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>title / sample</th>
+            <th>kind</th>
+            <th>status / detail</th>
+            <th style={{ textAlign: "right" }}>agree</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groupResults(report.topics).map((g) => (
+            <ReportGroup key={pathKey(g.path)} path={g.path} topics={g.topics} />
+          ))}
+        </tbody>
+      </table>
+
+      <Footer report={report} />
     </>
   );
 }
@@ -149,61 +192,58 @@ function Compare({ newer, older }: { newer: CoverageReportWithTree; older: Cover
 
   return (
     <>
-      <div className="card">
-        {mismatch ? (
-          <div className="banner warn">
-            Manifests differ ({older.manifestId}@{older.manifestVersion} → {newer.manifestId}@{newer.manifestVersion}) —
-            the diff may be unreliable.
-          </div>
-        ) : null}
-        <div className="caption">
-          Compare tracks <b>coverage &amp; faithfulness</b>, not correctness. A <code>refused → grounded</code> flip is a
-          coverage gain that could still be confidently wrong — only ground truth (not yet built) settles correctness.
-          Only a rising canary-bite is a hard regression.
+      {mismatch ? (
+        <div className="banner warn">
+          Manifests differ ({older.manifestId}@{older.manifestVersion} → {newer.manifestId}@{newer.manifestVersion}) — the
+          diff may be unreliable.
         </div>
-        <div className="gauges">
-          {deltas.map((d) => {
-            const cls = d.delta === 0 ? "flat" : `${d.delta > 0 ? "up" : "down"}-${d.better ? "good" : "bad"}`;
-            const sign = d.delta > 0 ? "+" : "";
-            return (
-              <div className="gauge" key={d.def.key}>
-                <div className="g-label">
-                  {d.def.label}
-                  {d.regression ? <span className="pill s-alarm">REGRESSION</span> : null}
-                </div>
-                <div className="g-num">{pct(d.now)}</div>
-                <div className={`g-delta ${cls}`}>
-                  {sign}
-                  {Math.round(d.delta * 100)} pts vs baseline
-                </div>
-              </div>
-            );
-          })}
-        </div>
+      ) : null}
+      <div className="caption">
+        Compare tracks <b>coverage &amp; faithfulness</b>, not correctness. A <code>refused → grounded</code> flip is a
+        coverage gain that could still be confidently wrong — only ground truth (not yet built) settles correctness.
+        Only a rising canary bite is a hard regression.
       </div>
 
-      <div className="card">
-        <label style={{ margin: "0 0 10px" }}>Topic status changes ({transitions.length})</label>
-        {transitions.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>id</th>
-                <th>title</th>
-                <th>transition</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {groups.map((g) => (
-                <ChangeGroup key={pathKey(g.path)} path={g.path} rows={g.rows} />
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <div className="hint">No per-topic status changed between these two runs.</div>
-        )}
+      <div className="gauges">
+        {deltas.map((d) => {
+          const cls = d.delta === 0 ? "flat" : `${d.delta > 0 ? "up" : "down"}-${d.better ? "good" : "bad"}`;
+          const sign = d.delta > 0 ? "+" : "";
+          return (
+            <div className="gauge" key={d.def.key}>
+              <div className="g-label">
+                {d.def.label}
+                {d.regression ? <span className="pill s-alarm">REGRESSION</span> : null}
+              </div>
+              <div className="g-num">{pct(d.now)}</div>
+              <div className={`g-delta ${cls}`}>
+                {sign}
+                {Math.round(d.delta * 100)} pts vs baseline
+              </div>
+            </div>
+          );
+        })}
       </div>
+
+      <h6 style={{ color: "var(--color-neutral-600)", margin: "0 0 10px" }}>Topic status changes ({transitions.length})</h6>
+      {transitions.length ? (
+        <table className="table">
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>title</th>
+              <th>transition</th>
+              <th>note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((g) => (
+              <ChangeGroup key={pathKey(g.path)} path={g.path} rows={g.rows} />
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <div className="hint">No per-topic status changed between these two runs.</div>
+      )}
     </>
   );
 }
@@ -226,8 +266,9 @@ function ChangeGroup({
             <span className="c-id">{tr.id}</span>
           </td>
           <td>{tr.title}</td>
-          <td>
-            <span className={`pill ${STATUS_CLASS[tr.from]}`}>{tr.from}</span> →{" "}
+          <td style={{ whiteSpace: "nowrap" }}>
+            <span className={`pill ${STATUS_CLASS[tr.from]}`}>{tr.from}</span>{" "}
+            <span style={{ color: "var(--color-neutral-400)" }}>→</span>{" "}
             <span className={`pill ${STATUS_CLASS[tr.to]}`}>{tr.to}</span>
           </td>
           <td>
@@ -244,9 +285,10 @@ export function CoverageView(props: {
   runA: string | null;
   runB: string | null;
   reports: Record<string, CoverageReportWithTree>;
+  levels: string[];
   dispatch: Dispatch<Action>;
 }): React.JSX.Element {
-  const { runs, runA, runB, reports, dispatch } = props;
+  const { runs, runA, runB, reports, levels, dispatch } = props;
 
   const optionLabel = (r: CoverageSummary): string =>
     `${r.generatedAt || r.file} · ${r.source || "?"} · ${r.manifestId}@${r.manifestVersion}`;
@@ -271,8 +313,8 @@ export function CoverageView(props: {
   return (
     <section className="view">
       <div className="toolbar">
-        <div>
-          <label style={{ margin: "0 0 4px" }}>Run</label>
+        <div className="field">
+          <label>Run</label>
           <select
             className="run"
             value={runA ?? ""}
@@ -285,8 +327,8 @@ export function CoverageView(props: {
             ))}
           </select>
         </div>
-        <div>
-          <label style={{ margin: "0 0 4px" }}>Compare against</label>
+        <div className="field">
+          <label>Compare against</label>
           <select
             className="run"
             value={runB ?? ""}
@@ -311,7 +353,7 @@ export function CoverageView(props: {
             <div className="empty">Loading reports…</div>
           )
         ) : reportA ? (
-          <SingleReport report={reportA} />
+          <SingleReport report={reportA} levels={levels} />
         ) : (
           <div className="empty">Loading report…</div>
         )}

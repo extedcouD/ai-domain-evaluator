@@ -261,6 +261,27 @@ describe("KB Studio server", () => {
     expect(m.json.topics.find((t) => t.id === "t3")?.path).toEqual(["spec", "sub"]);
   });
 
+  it("PUT /api/nodes renames an EMPTY node (moves it, does not delete it)", async () => {
+    // Regression: a freshly-created node has no topics, so the move loop is a no-op. The destination
+    // folder must still be created before the source is removed — otherwise renaming an empty node
+    // silently deletes it. (Empty subnodes under a renamed parent must survive for the same reason.)
+    const s = await start();
+    await req(s.base, "POST", "/api/nodes", { path: ["logistics"] });
+    await req(s.base, "POST", "/api/nodes", { path: ["logistics", "1.0.0"] }); // empty subnode
+
+    const { status } = await req<{ moved: number }>(s.base, "PUT", "/api/nodes/logistics", { to: ["shipping"] });
+    expect(status).toBe(200);
+    expect(existsSync(join(s.kbDir, "topics", "logistics"))).toBe(false);
+    expect(existsSync(join(s.kbDir, "topics", "shipping"))).toBe(true);
+    expect(existsSync(join(s.kbDir, "topics", "shipping", "1.0.0"))).toBe(true);
+
+    const nodes = await req<NodesResp>(s.base, "GET", "/api/nodes");
+    const paths = nodes.json.nodes.map((n) => n.path.join("/"));
+    expect(paths).toContain("shipping");
+    expect(paths).toContain("shipping/1.0.0");
+    expect(paths).not.toContain("logistics");
+  });
+
   it("POST /api/export writes a manifest.yaml that parses back to the merged manifest", async () => {
     const s = await start((kb) => {
       seedTopic(kb, ["protocol"], "real-a");

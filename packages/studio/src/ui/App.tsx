@@ -24,7 +24,6 @@ import type {
   Topic,
 } from "./types";
 import { CoverageView } from "./components/CoverageView";
-import { EditorSheet } from "./components/EditorSheet";
 import { Header } from "./components/Header";
 import { PathTree } from "./components/PathTree";
 import { Toast } from "./components/Toast";
@@ -147,7 +146,6 @@ export function App(): React.JSX.Element {
   const newestReport = newestFile ? state.reports[newestFile] : undefined;
   const index = useMemo(() => statusIndex(newestReport), [newestReport]);
   const hasCoverage = !!newestReport;
-  const levels = state.manifest?.levels ?? [];
 
   const defaultNewPath = (): string[] => {
     if (state.selectedPath.length) return state.selectedPath;
@@ -155,47 +153,95 @@ export function App(): React.JSX.Element {
     return top ? top.path : [];
   };
 
+  // ---- autosave ----------------------------------------------------------------------------------
+  // The truth for "needs a write" is (current payload !== last-saved payload), tracked in a ref so an
+  // in-flight save can't clobber edits made while it was running. One debounce timer per open editor;
+  // a changed id renames via `previous` (the editor's on-disk `original`). `stateRef` gives the timer
+  // callback the latest editor without re-arming on every keystroke.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const saveTimers = useRef<Map<string, number>>(new Map());
+  const savedPayload = useRef<Map<string, string>>(new Map());
+
+  const flushSave = useCallback(
+    async (eid: string): Promise<void> => {
+      const e = stateRef.current.editors[eid];
+      if (!e || e.saving || validateEditor(e).length) return;
+      const topic = editorTopic(e);
+      const payload = JSON.stringify(topic);
+      if (savedPayload.current.get(eid) === payload) return; // nothing new since the last good save
+      const body = editorMoved(e) && e.original ? { topic, previous: e.original } : { topic };
+      dispatch({ type: "editorSaving", eid, saving: true });
+      try {
+        await post("/api/topics", body);
+        savedPayload.current.set(eid, payload);
+        dispatch({ type: "editorSaved", eid, identity: { path: topic.path, id: topic.id } });
+        await Promise.all([loadManifest(), loadNodes()]);
+      } catch (err) {
+        // Remember the doomed payload so we don't hammer the server with an identical write; the error
+        // stays visible and any further edit (a new payload) retries.
+        savedPayload.current.set(eid, payload);
+        dispatch({ type: "editorError", eid, error: errMsg(err) });
+      }
+    },
+    [loadManifest, loadNodes],
+  );
+
+  useEffect(() => {
+    for (const [eid, e] of Object.entries(state.editors)) {
+      if (e.saving || validateEditor(e).length) continue;
+      const payload = JSON.stringify(editorTopic(e));
+      if (savedPayload.current.get(eid) === payload) continue;
+      // A just-opened, untouched existing topic is already on disk — seed its baseline and don't
+      // re-write it. (A dirty editor, or a duplicate/draft, has no baseline and DOES need saving.)
+      if (!savedPayload.current.has(eid) && !e.dirty) {
+        savedPayload.current.set(eid, payload);
+        continue;
+      }
+      const prev = saveTimers.current.get(eid);
+      if (prev !== undefined) window.clearTimeout(prev);
+      saveTimers.current.set(
+        eid,
+        window.setTimeout(() => {
+          saveTimers.current.delete(eid);
+          void flushSave(eid);
+        }, 700),
+      );
+    }
+    // Drop pending timers for editors that have since closed.
+    for (const eid of [...saveTimers.current.keys()]) {
+      if (!state.editors[eid]) {
+        window.clearTimeout(saveTimers.current.get(eid));
+        saveTimers.current.delete(eid);
+      }
+    }
+  }, [state.editors, flushSave]);
+
   // ---- topic handlers ----------------------------------------------------------------------------
   const onNewTopic = (kind: Kind): void => dispatch({ type: "openEditorNew", kind, path: defaultNewPath() });
 
-  const onOpenTopic = (topic: Topic): void => {
-    if (state.editor?.dirty && !window.confirm("Discard unsaved changes?")) return;
-    dispatch({ type: "openEditorEdit", topic });
+  const onOpenTopic = (topic: Topic): void => dispatch({ type: "openEditorEdit", topic });
+
+  const onCloseEditor = (eid: string): void => {
+    const e = state.editors[eid];
+    // With autosave the only unsaved state is one that can't be saved (still invalid) — warn first.
+    if (e?.dirty && validateEditor(e).length && !window.confirm("This topic isn't valid yet, so it hasn't been saved. Discard it?")) return;
+    dispatch({ type: "closeEditor", eid });
   };
 
-  const onCloseEditor = (): void => {
-    if (state.editor?.dirty && !window.confirm("Discard unsaved changes?")) return;
-    dispatch({ type: "closeEditor" });
-  };
-
-  const saveTopic = async (): Promise<void> => {
-    const e = state.editor;
+  const deleteTopic = async (eid: string): Promise<void> => {
+    const e = state.editors[eid];
     if (!e) return;
-    const errs = validateEditor(e);
-    if (errs.length) {
-      dispatch({ type: "editorError", error: errs.join("\n") });
+    if (!e.original) {
+      dispatch({ type: "closeEditor", eid }); // a never-saved draft: just drop it, nothing on disk
       return;
     }
-    const topic = editorTopic(e);
-    const body = editorMoved(e) && e.original ? { topic, previous: e.original } : { topic };
-    try {
-      await post("/api/topics", body);
-      toast(`saved ${topic.id}`);
-      await Promise.all([loadManifest(), loadNodes()]);
-      dispatch({ type: "openEditorEdit", topic }); // reopen clean, now as an edit
-    } catch (err) {
-      dispatch({ type: "editorError", error: errMsg(err) });
-    }
-  };
-
-  const deleteTopic = async (): Promise<void> => {
-    const e = state.editor;
-    if (!e?.original) return;
     if (!window.confirm(`Delete ${e.original.id}?`)) return;
     try {
       await del(`/api/topics/${encodeRef(...e.original.path, e.original.id)}`);
       toast(`deleted ${e.original.id}`);
-      dispatch({ type: "closeEditor" });
+      savedPayload.current.delete(eid);
+      dispatch({ type: "closeEditor", eid });
       await Promise.all([loadManifest(), loadNodes()]);
     } catch (err) {
       toast(errMsg(err), "error");
@@ -266,6 +312,7 @@ export function App(): React.JSX.Element {
       <Header
         view={state.view}
         manifest={state.manifest}
+        nodes={state.nodes}
         theme={state.theme}
         dispatch={dispatch}
         onSaveMeta={(id, version, subject, lv) => void saveMeta(id, version, subject, lv)}
@@ -300,29 +347,18 @@ export function App(): React.JSX.Element {
                 dispatch={dispatch}
                 onNewTopic={onNewTopic}
                 onOpenTopic={onOpenTopic}
+                editors={Object.values(state.editors)}
+                onCloseEditor={onCloseEditor}
+                onDeleteEditor={(eid) => void deleteTopic(eid)}
               />
             </main>
           </>
         ) : (
           <main className="workspace">
-            <CoverageView runs={state.runs} runA={state.runA} runB={state.runB} reports={state.reports} dispatch={dispatch} />
+            <CoverageView runs={state.runs} runA={state.runA} runB={state.runB} reports={state.reports} levels={state.manifest?.levels ?? []} dispatch={dispatch} />
           </main>
         )}
       </div>
-
-      {state.editor ? (
-        <EditorSheet
-          editor={state.editor}
-          nodes={state.nodes}
-          levels={levels}
-          index={index}
-          hasCoverage={hasCoverage}
-          dispatch={dispatch}
-          onSave={() => void saveTopic()}
-          onClose={onCloseEditor}
-          onDelete={() => void deleteTopic()}
-        />
-      ) : null}
 
       <Toast toast={state.toast} />
     </div>

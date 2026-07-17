@@ -211,16 +211,25 @@ export function buildNodeTree(nodes: NodeInfo[]): TreeNode[] {
   return roots;
 }
 
-/** The existing sibling SEGMENTS directly under a prefix (for the PathPicker's per-level select). */
-export function siblingSegments(nodes: NodeInfo[], prefix: string[]): string[] {
-  const out = new Set<string>();
-  for (const n of nodes) {
-    if (n.path.length !== prefix.length + 1) continue;
-    if (!pathStartsWith(n.path, prefix)) continue;
-    const seg = n.path[n.path.length - 1];
-    if (seg !== undefined) out.add(seg);
+/** A version-like segment: `v1`, `1.2`, `1.2.0`, `2024-01` — a depth of these is auto-labelled "version". */
+const VERSIONISH = /^v?\d+(?:[.-]\d+)+$|^v\d+$/i;
+
+/**
+ * Suggest taxonomy level LABELS from the folder structure. The folders give the DEPTH (how many labels
+ * are needed) and the segment names at each depth — but not a level's human meaning, so each slot gets a
+ * best-effort, editable default: a depth whose segments are ALL version-like → "version"; the first
+ * level → "domain"; otherwise "level N". Labels are display-only metadata, so this is a starting point
+ * the author renames, never a constraint (see the manifest `levels` schema comment in core).
+ */
+export function suggestLevelLabels(paths: string[][]): string[] {
+  const depth = paths.reduce((m, p) => Math.max(m, p.length), 0);
+  const out: string[] = [];
+  for (let i = 0; i < depth; i++) {
+    const segs = paths.map((p) => p[i]).filter((s): s is string => s !== undefined);
+    const allVersion = segs.length > 0 && segs.every((s) => VERSIONISH.test(s));
+    out.push(allVersion ? "version" : i === 0 ? "domain" : `level ${String(i + 1)}`);
   }
-  return [...out].sort((a, b) => a.localeCompare(b));
+  return out;
 }
 
 // ---- compare (A vs B) --------------------------------------------------------------------------

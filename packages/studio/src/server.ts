@@ -120,6 +120,21 @@ function countSubtreeTopics(dir: string): number {
   return n;
 }
 
+/** Every directory anywhere under a subtree (including empty ones), as segment paths relative to `base`. */
+function collectDirs(base: string, prefix: string[] = []): string[][] {
+  const here = join(base, ...prefix);
+  const out: string[][] = [];
+  if (!existsSync(here)) return out;
+  for (const ent of readdirSync(here, { withFileTypes: true })) {
+    if (ent.isDirectory() && SEGMENT_RE.test(ent.name)) {
+      const path = [...prefix, ent.name];
+      out.push(path);
+      out.push(...collectDirs(base, path));
+    }
+  }
+  return out;
+}
+
 /** Every topic file under a subtree, with its full folder-derived path (relative to `topics/`). */
 function collectSubtree(kbDir: string, prefix: string[]): { path: string[]; id: string; file: string }[] {
   const base = join(kbDir, "topics", ...prefix);
@@ -236,6 +251,11 @@ async function putNode(req: IncomingMessage, res: ServerResponse, kbDir: string,
   const fromDir = join(kbDir, "topics", ...from);
   const toDir = join(kbDir, "topics", ...to);
   if (countSubtreeTopics(toDir) > 0) throw new BadRequest(`target "${to.join("/")}" already exists and has topics`);
+
+  // Recreate the full directory shape FIRST — including branches with no topics — so a subtree that's
+  // empty (or has topic-less sub-nodes) still exists at `to` once `fromDir` is removed below.
+  mkdirSync(toDir, { recursive: true });
+  for (const rel of collectDirs(fromDir)) mkdirSync(join(toDir, ...rel), { recursive: true });
 
   // Write-new-then-remove per file, so a mid-move failure never orphans a topic.
   let moved = 0;

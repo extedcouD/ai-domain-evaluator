@@ -66,6 +66,9 @@ pnpm studio          # author the KB (folder-first) + view coverage in the brows
 
 `pnpm test` requires **no running model**. `pnpm dev` and `pnpm studio` need a backend — set `.env`.
 
+For getting a *trustworthy* signal out of a run — judge/source separation, canary budgeting,
+paraphrase counts, and the temperature caveat — see [`docs/best-practices.md`](docs/best-practices.md).
+
 ## Architecture
 
 **The seam is one interface, four methods** — `complete`, `stream`, `health`,

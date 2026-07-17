@@ -1,7 +1,0 @@
-id: on-select
-path: [retail, 1.2.0, select]
-title: The /select request and on_select quote
-kind: real
-questions:
-  - What does the ONDC /select call do, and what does on_select return?
-  - Explain the ONDC select stage and the quote carried in on_select.

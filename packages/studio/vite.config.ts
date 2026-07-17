@@ -20,7 +20,7 @@ export default defineConfig({
     // Fail loudly on a port conflict instead of silently shifting to another port.
     strictPort: true,
     proxy: {
-      "/api": `http://127.0.0.1:${String(apiPort)}`,
+      "/api/": `http://127.0.0.1:${String(apiPort)}`,
     },
   },
 });

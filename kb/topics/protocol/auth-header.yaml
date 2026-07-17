@@ -1,7 +1,0 @@
-id: auth-header
-path: [protocol]
-title: The Authorization header signing
-kind: real
-questions:
-  - How is the ONDC Authorization header constructed and signed?
-  - Explain ONDC request signing with the ed25519 signature and the Authorization header.

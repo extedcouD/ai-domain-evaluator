@@ -8,7 +8,7 @@
  * runs, reports) — it just stores what App hands it. Side effects (network, timers, confirms, the DOM,
  * the clock) all live in App/hooks; the reducer never performs one.
  */
-import { slug, TOPIC_ID_RE, type StatusBucket } from "./derive";
+import { slug, topicKey, TOPIC_ID_RE, type StatusBucket } from "./derive";
 import type {
   CoverageReportWithTree,
   CoverageSummary,
@@ -20,9 +20,12 @@ import type {
 
 export type View = "author" | "coverage";
 
-/** The topic editor's working copy. `original` is null for a brand-new topic; when it differs from
- *  the current {path,id} on save, App sends `previous` and the server performs a move/rename. */
+/** The topic editor's working copy. Several can be open at once (keyed by `eid` in `State.editors`),
+ *  each autosaving independently. `original` is the identity currently on disk — null for a brand-new
+ *  topic until its first successful save, then it tracks the last-saved {path,id}; when the id changes,
+ *  App sends `previous: original` and the server renames. `saving` is set by App around the POST. */
 export interface EditorState {
+  eid: string;
   original: { path: string[]; id: string } | null;
   title: string;
   id: string;
@@ -31,6 +34,7 @@ export interface EditorState {
   kind: Kind;
   questions: string[];
   dirty: boolean;
+  saving: boolean;
   error: string | null;
 }
 
@@ -57,7 +61,9 @@ export interface State {
   kindFilter: Kind | null;
   statusFilter: StatusBucket | null;
 
-  editor: EditorState | null;
+  // Open editors, keyed by a stable client-side `eid`. Multiple accordions can be open concurrently;
+  // each one autosaves on its own debounce. Insertion order is preserved for stable rendering.
+  editors: Record<string, EditorState>;
 
   // Coverage view: which run(s) are shown.
   runA: string | null; // file
@@ -82,7 +88,7 @@ export function initialState(): State {
     query: "",
     kindFilter: null,
     statusFilter: null,
-    editor: null,
+    editors: {},
     runA: null,
     runB: null,
     toast: null,
@@ -104,20 +110,17 @@ export type Action =
   | { type: "setQuery"; query: string }
   | { type: "toggleKindFilter"; kind: Kind }
   | { type: "toggleStatusFilter"; bucket: StatusBucket }
-  // editor
+  // editor (each targets one open editor by `eid`, except the "open" actions which mint one)
   | { type: "openEditorEdit"; topic: Topic }
   | { type: "openEditorNew"; kind: Kind; path: string[] }
-  | { type: "editorField"; field: "title" | "id"; value: string }
-  | { type: "editorSetKind"; kind: Kind }
-  | { type: "editorSetPath"; path: string[] }
-  | { type: "editorAddQuestion" }
-  | { type: "editorSetQuestion"; index: number; value: string }
-  | { type: "editorRemoveQuestion"; index: number }
-  | { type: "editorMoveQuestion"; index: number; delta: 1 | -1 }
-  | { type: "editorError"; error: string | null }
-  | { type: "editorDuplicate" }
-  | { type: "editorFlipKind" }
-  | { type: "closeEditor" }
+  | { type: "editorField"; eid: string; field: "title" | "id"; value: string }
+  | { type: "editorSetKind"; eid: string; kind: Kind }
+  | { type: "editorSetQuestions"; eid: string; questions: string[] }
+  | { type: "editorSaving"; eid: string; saving: boolean }
+  | { type: "editorSaved"; eid: string; identity: { path: string[]; id: string } }
+  | { type: "editorError"; eid: string; error: string | null }
+  | { type: "editorDuplicate"; eid: string }
+  | { type: "closeEditor"; eid: string }
   // coverage
   | { type: "selectRun"; slot: "a" | "b"; file: string | null }
   // chrome
@@ -125,8 +128,9 @@ export type Action =
   | { type: "dismissToast" }
   | { type: "setTheme"; theme: "light" | "dark" | null };
 
-function editorFor(topic: Topic): EditorState {
+function editorFor(eid: string, topic: Topic): EditorState {
   return {
+    eid,
     original: { path: topic.path, id: topic.id },
     title: topic.title,
     id: topic.id,
@@ -135,12 +139,14 @@ function editorFor(topic: Topic): EditorState {
     kind: topic.kind,
     questions: topic.questions.length ? topic.questions : [""],
     dirty: false,
+    saving: false,
     error: null,
   };
 }
 
-function newEditor(kind: Kind, path: string[]): EditorState {
+function newEditor(eid: string, kind: Kind, path: string[]): EditorState {
   return {
+    eid,
     original: null,
     title: "",
     id: "",
@@ -149,14 +155,25 @@ function newEditor(kind: Kind, path: string[]): EditorState {
     kind,
     questions: [""],
     dirty: false,
+    saving: false,
     error: null,
   };
 }
 
-/** Apply an editor sub-update and mark it dirty + clear any stale error. */
-function editEditor(state: State, patch: Partial<EditorState>): State {
-  if (!state.editor) return state;
-  return { ...state, editor: { ...state.editor, ...patch, dirty: true, error: null } };
+/** The `eid` of an already-open editor for this on-disk topic, if any (so re-opening focuses it). */
+function openEidFor(state: State, topic: Topic): string | null {
+  const key = topicKey(topic);
+  for (const [eid, e] of Object.entries(state.editors)) {
+    if (e.original && topicKey(e.original) === key) return eid;
+  }
+  return null;
+}
+
+/** Apply an editor sub-update by `eid` and mark it dirty + clear any stale error. */
+function editEditor(state: State, eid: string, patch: Partial<EditorState>): State {
+  const e = state.editors[eid];
+  if (!e) return state;
+  return { ...state, editors: { ...state.editors, [eid]: { ...e, ...patch, dirty: true, error: null } } };
 }
 
 export function reducer(state: State, action: Action): State {
@@ -201,83 +218,83 @@ export function reducer(state: State, action: Action): State {
     case "toggleStatusFilter":
       return { ...state, statusFilter: state.statusFilter === action.bucket ? null : action.bucket };
 
-    case "openEditorEdit":
-      return { ...state, editor: editorFor(action.topic) };
+    case "openEditorEdit": {
+      // Re-opening a topic that's already open is a no-op (its accordion stays as-is).
+      if (openEidFor(state, action.topic)) return state;
+      const eid = `e${String(state.nextId)}`;
+      return { ...state, editors: { ...state.editors, [eid]: editorFor(eid, action.topic) }, nextId: state.nextId + 1 };
+    }
 
-    case "openEditorNew":
-      return { ...state, editor: newEditor(action.kind, action.path) };
+    case "openEditorNew": {
+      const eid = `e${String(state.nextId)}`;
+      return { ...state, editors: { ...state.editors, [eid]: newEditor(eid, action.kind, action.path) }, nextId: state.nextId + 1 };
+    }
 
     case "editorField": {
-      if (!state.editor) return state;
+      const e = state.editors[action.eid];
+      if (!e) return state;
       if (action.field === "title") {
         // Auto-slug the id from the title until the id has been hand-edited.
-        const id = state.editor.idEdited ? state.editor.id : slug(action.value);
-        return editEditor(state, { title: action.value, id });
+        const id = e.idEdited ? e.id : slug(action.value);
+        return editEditor(state, action.eid, { title: action.value, id });
       }
-      return editEditor(state, { id: action.value, idEdited: true });
+      return editEditor(state, action.eid, { id: action.value, idEdited: true });
     }
 
     case "editorSetKind":
-      return editEditor(state, { kind: action.kind });
+      return editEditor(state, action.eid, { kind: action.kind });
 
-    case "editorSetPath":
-      return editEditor(state, { path: action.path });
+    case "editorSetQuestions":
+      return editEditor(state, action.eid, { questions: action.questions });
 
-    case "editorAddQuestion":
-      if (!state.editor) return state;
-      return editEditor(state, { questions: [...state.editor.questions, ""] });
-
-    case "editorSetQuestion": {
-      if (!state.editor) return state;
-      const questions = state.editor.questions.map((q, i) => (i === action.index ? action.value : q));
-      return editEditor(state, { questions });
+    case "editorSaving": {
+      const e = state.editors[action.eid];
+      if (!e) return state;
+      return { ...state, editors: { ...state.editors, [action.eid]: { ...e, saving: action.saving } } };
     }
 
-    case "editorRemoveQuestion": {
-      if (!state.editor) return state;
-      const questions = state.editor.questions.filter((_, i) => i !== action.index);
-      return editEditor(state, { questions: questions.length ? questions : [""] });
-    }
-
-    case "editorMoveQuestion": {
-      if (!state.editor) return state;
-      const j = action.index + action.delta;
-      const qs = state.editor.questions;
-      if (j < 0 || j >= qs.length) return state;
-      const questions = [...qs];
-      const a = questions[action.index];
-      const b = questions[j];
-      if (a === undefined || b === undefined) return state;
-      questions[action.index] = b;
-      questions[j] = a;
-      return editEditor(state, { questions });
-    }
-
-    case "editorError":
-      if (!state.editor) return state;
-      return { ...state, editor: { ...state.editor, error: action.error } };
-
-    case "editorDuplicate": {
-      if (!state.editor) return state;
-      const base = state.editor.id || slug(state.editor.title) || "topic";
+    case "editorSaved": {
+      const e = state.editors[action.eid];
+      if (!e) return state;
+      // Stamp the now-on-disk identity so the next id change renames from it; clear saving/error.
+      // `dirty` is left to the value it holds — the autosave loop compares payloads, not this flag.
       return {
         ...state,
-        editor: {
-          ...state.editor,
-          original: null, // saving now creates a new file
-          id: `${base}-copy`.slice(0, 60),
-          idEdited: true,
-          dirty: true,
-          error: null,
-        },
+        editors: { ...state.editors, [action.eid]: { ...e, original: action.identity, saving: false, dirty: false, error: null } },
       };
     }
 
-    case "editorFlipKind":
-      return editEditor(state, { kind: state.editor?.kind === "canary" ? "real" : "canary" });
+    case "editorError": {
+      const e = state.editors[action.eid];
+      if (!e) return state;
+      return { ...state, editors: { ...state.editors, [action.eid]: { ...e, saving: false, error: action.error } } };
+    }
 
-    case "closeEditor":
-      return { ...state, editor: null };
+    case "editorDuplicate": {
+      const src = state.editors[action.eid];
+      if (!src) return state;
+      // Open a fresh unsaved draft copy in its own accordion, leaving the source editor untouched.
+      const base = src.id || slug(src.title) || "topic";
+      const eid = `e${String(state.nextId)}`;
+      const copy: EditorState = {
+        ...src,
+        eid,
+        original: null, // a brand-new file once it first autosaves
+        id: `${base}-copy`.slice(0, 60),
+        idEdited: true,
+        dirty: true,
+        saving: false,
+        error: null,
+      };
+      return { ...state, editors: { ...state.editors, [eid]: copy }, nextId: state.nextId + 1 };
+    }
+
+    case "closeEditor": {
+      if (!state.editors[action.eid]) return state;
+      const editors = { ...state.editors };
+      delete editors[action.eid];
+      return { ...state, editors };
+    }
 
     case "selectRun":
       return action.slot === "a" ? { ...state, runA: action.file } : { ...state, runB: action.file };
@@ -314,8 +331,9 @@ export function editorTopic(e: EditorState): Topic {
   };
 }
 
-/** Did the editor's identity move? (a changed path or id means the save is a rename/move). */
+/** Did the editor's identity move? The editor can only change the id (not the path), so a changed
+ *  id means the save is a rename and App sends `previous`. */
 export function editorMoved(e: EditorState): boolean {
   if (!e.original) return false;
-  return e.original.id !== e.id.trim() || e.original.path.join("/") !== e.path.join("/");
+  return e.original.id !== e.id.trim();
 }
