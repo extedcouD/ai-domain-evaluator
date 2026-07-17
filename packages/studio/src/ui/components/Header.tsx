@@ -117,6 +117,7 @@ export function Header(props: {
   dispatch: Dispatch<Action>;
   onSaveMeta: (id: string, version: string, subject: string, levels: string[]) => void;
   onExport: () => void;
+  onOpenHistory: () => void;
 }): React.JSX.Element {
   const { view, manifest, dispatch } = props;
   const topicCount = manifest?.topics.length ?? 0;
@@ -148,6 +149,14 @@ export function Header(props: {
             ))}
           </div>
           <IdentityPanel manifest={manifest} nodes={props.nodes} onSaveMeta={props.onSaveMeta} onExport={props.onExport} />
+          <button
+            className="btn btn-secondary sm"
+            type="button"
+            title="History &amp; Trash — every change is a commit; deleted topics are recoverable here"
+            onClick={props.onOpenHistory}
+          >
+            ⟲ History
+          </button>
           <button
             className="icon-btn"
             type="button"

@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import { suggestLevelLabels } from "../src/ui/derive";
+import { suggestLevelLabels, topicRefFromFile } from "../src/ui/derive";
+
+describe("topicRefFromFile", () => {
+  it("strips the (possibly prefixed) path up to topics/ into { path, id }", () => {
+    expect(topicRefFromFile("topics/ondc/protocol/what-is-a-post.yaml")).toEqual({
+      path: ["ondc", "protocol"],
+      id: "what-is-a-post",
+    });
+    // Production topology: the KB is a subdir, so git records a `kb/` prefix — it must be stripped too.
+    expect(topicRefFromFile("kb/topics/retail/1.2.0/search.yaml")).toEqual({
+      path: ["retail", "1.2.0"],
+      id: "search",
+    });
+  });
+
+  it("returns null for a non-topic file or a topic sitting directly under topics/", () => {
+    expect(topicRefFromFile("kb/manifest.meta.yaml")).toBeNull();
+    expect(topicRefFromFile("topics/loose.yaml")).toBeNull(); // no path segment — not a valid topic
+  });
+});
 
 describe("suggestLevelLabels", () => {
   it("sizes the label list to the DEEPEST folder path (ragged taxonomy)", () => {

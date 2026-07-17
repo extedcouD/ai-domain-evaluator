@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 
 import { del, encodeRef, get, post, put } from "./api";
-import { statusIndex } from "./derive";
+import { statusIndex, topicRefFromFile } from "./derive";
 import {
   editorMoved,
   editorTopic,
@@ -18,6 +18,8 @@ import {
 import type {
   CoverageReportWithTree,
   CoverageSummary,
+  DeletedEntry,
+  HistoryData,
   Kind,
   Manifest,
   NodeInfo,
@@ -25,6 +27,7 @@ import type {
 } from "./types";
 import { CoverageView } from "./components/CoverageView";
 import { Header } from "./components/Header";
+import { HistoryPanel } from "./components/HistoryPanel";
 import { PathTree } from "./components/PathTree";
 import { Toast } from "./components/Toast";
 import { TopicList } from "./components/TopicList";
@@ -82,6 +85,19 @@ export function App(): React.JSX.Element {
   const toast = useCallback((message: string, kind: "info" | "error" = "info") => {
     dispatch({ type: "toast", message, kind });
   }, []);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      dispatch({ type: "historyLoaded", history: await get<HistoryData>("/api/history") });
+    } catch {
+      dispatch({ type: "historyLoaded", history: { commits: [], deletions: [] } });
+    }
+  }, []);
+
+  const openHistory = useCallback(() => {
+    dispatch({ type: "setHistoryOpen", open: true });
+    void loadHistory();
+  }, [loadHistory]);
 
   // ---- boot --------------------------------------------------------------------------------------
   useEffect(() => {
@@ -306,6 +322,18 @@ export function App(): React.JSX.Element {
     }
   };
 
+  const restoreTopic = async (entry: DeletedEntry): Promise<void> => {
+    const ref = topicRefFromFile(entry.file);
+    if (!ref) return;
+    try {
+      await post("/api/restore", { sha: entry.restoreSha, path: ref.path, id: ref.id });
+      toast(`restored ${ref.id}`);
+      await Promise.all([loadManifest(), loadNodes(), loadHistory()]);
+    } catch (err) {
+      toast(errMsg(err), "error");
+    }
+  };
+
   // ---- render ------------------------------------------------------------------------------------
   return (
     <div className="app">
@@ -317,6 +345,7 @@ export function App(): React.JSX.Element {
         dispatch={dispatch}
         onSaveMeta={(id, version, subject, lv) => void saveMeta(id, version, subject, lv)}
         onExport={() => void exportManifest()}
+        onOpenHistory={openHistory}
       />
 
       <div className={`body${state.view === "coverage" ? " cov" : ""}`}>
@@ -359,6 +388,14 @@ export function App(): React.JSX.Element {
           </main>
         )}
       </div>
+
+      {state.historyOpen && (
+        <HistoryPanel
+          data={state.history}
+          onRestore={(entry) => void restoreTopic(entry)}
+          onClose={() => dispatch({ type: "setHistoryOpen", open: false })}
+        />
+      )}
 
       <Toast toast={state.toast} />
     </div>

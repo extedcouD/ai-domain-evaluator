@@ -97,3 +97,27 @@ export interface NodeInfo {
   path: string[];
   hasTopics: boolean;
 }
+
+/** One commit, as `GET /api/history` returns it (the History tab). */
+export interface HistoryEntry {
+  sha: string;
+  author: string;
+  email: string;
+  date: string;
+  message: string;
+}
+
+/** A deleted topic file with the revision to restore its last-live content from (the Trash tab). */
+export interface DeletedEntry {
+  file: string;
+  restoreSha: string;
+  deletedAt: string;
+  deletedBy: string;
+  message: string;
+}
+
+/** The `GET /api/history` payload: recent commits plus recoverable deletions. */
+export interface HistoryData {
+  commits: HistoryEntry[];
+  deletions: DeletedEntry[];
+}

@@ -15,8 +15,10 @@
   },
   "dependencies": {
     "@evaluator/core": "workspace:*",
+    "async-mutex": "^0.5.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "simple-git": "^3.36.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

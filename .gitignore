@@ -7,3 +7,8 @@ logs/
 kb-coverage/
 coverage/
 .DS_Store
+
+# The KB manifest is a GENERATED snapshot of kb/topics/**; the folder is the source of truth. Committing
+# it churns a merge-conflict magnet on every edit, so it's a local/on-export artifact only. If it's still
+# tracked from before, untrack once with: git rm --cached kb/manifest.yaml
+kb/manifest.yaml

@@ -1656,3 +1656,91 @@ select.run {
     animation: none !important;
   }
 }
+
+/* ---- History / Trash modal — the visible half of the git safety net ---- */
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  background: color-mix(in srgb, #000 38%, transparent);
+}
+.history-panel {
+  width: min(640px, 100%);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+}
+.history-body {
+  overflow-y: auto;
+  padding: var(--space-1) 0;
+}
+.history-empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--color-neutral-500);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-divider) 55%, transparent);
+}
+.history-row:last-child {
+  border-bottom: 0;
+}
+.history-sha {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-neutral-500);
+  font-variant-numeric: tabular-nums;
+}
+.history-trash-icon {
+  flex: none;
+  font-size: 14px;
+  opacity: 0.8;
+}
+.history-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.history-msg {
+  font-size: 13px;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-meta {
+  font-size: 11px;
+  color: var(--color-neutral-500);
+  margin-top: 1px;
+}
+.history-foot {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-divider);
+}

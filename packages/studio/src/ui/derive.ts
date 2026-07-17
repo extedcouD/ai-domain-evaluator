@@ -44,6 +44,19 @@ export function pathStartsWith(path: string[], prefix: string[]): boolean {
   return prefix.every((seg, i) => path[i] === seg);
 }
 
+/**
+ * Parse a repo-relative topic file path (`…/topics/<seg…>/<id>.yaml`) into `{ path, id }`, or null when
+ * it isn't a topic file. Turns a Trash entry's `file` back into the coordinates `POST /api/restore` wants.
+ */
+export function topicRefFromFile(file: string): { path: string[]; id: string } | null {
+  const body = /topics\/(.+)\.yaml$/.exec(file)?.[1];
+  if (!body) return null;
+  const segs = body.split("/");
+  const id = segs.pop();
+  if (!id || segs.length === 0) return null;
+  return { path: segs, id };
+}
+
 export const pct = (x: number): string => `${String(Math.round((x || 0) * 100))}%`;
 
 // ---- status → visual buckets -------------------------------------------------------------------

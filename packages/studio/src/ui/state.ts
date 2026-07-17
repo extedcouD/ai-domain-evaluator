@@ -12,6 +12,7 @@ import { slug, topicKey, TOPIC_ID_RE, type StatusBucket } from "./derive";
 import type {
   CoverageReportWithTree,
   CoverageSummary,
+  HistoryData,
   Kind,
   Manifest,
   NodeInfo,
@@ -72,6 +73,10 @@ export interface State {
   toast: Toast | null;
   theme: "light" | "dark" | null; // null === follow the system
 
+  // History / Trash panel: a modal over `GET /api/history` with one-click restore of deletions.
+  historyOpen: boolean;
+  history: HistoryData | null;
+
   nextId: number;
 }
 
@@ -93,6 +98,8 @@ export function initialState(): State {
     runB: null,
     toast: null,
     theme: null,
+    historyOpen: false,
+    history: null,
     nextId: 1,
   };
 }
@@ -126,7 +133,10 @@ export type Action =
   // chrome
   | { type: "toast"; message: string; kind: "info" | "error" }
   | { type: "dismissToast" }
-  | { type: "setTheme"; theme: "light" | "dark" | null };
+  | { type: "setTheme"; theme: "light" | "dark" | null }
+  // history / trash
+  | { type: "setHistoryOpen"; open: boolean }
+  | { type: "historyLoaded"; history: HistoryData };
 
 function editorFor(eid: string, topic: Topic): EditorState {
   return {
@@ -307,6 +317,13 @@ export function reducer(state: State, action: Action): State {
 
     case "setTheme":
       return { ...state, theme: action.theme };
+
+    case "setHistoryOpen":
+      // Clear the stale snapshot on open so the panel shows a loading state, not last time's data.
+      return { ...state, historyOpen: action.open, history: action.open ? null : state.history };
+
+    case "historyLoaded":
+      return { ...state, history: action.history };
   }
 }
 
