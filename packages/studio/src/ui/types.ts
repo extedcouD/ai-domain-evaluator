@@ -22,6 +22,8 @@ export interface Manifest {
   subject?: string;
   levels?: string[];
   topics: Topic[];
+  /** topicKey (`[...path, id].join("/")`) → content hash, the optimistic-concurrency token per topic. */
+  versions?: Record<string, string>;
 }
 
 export type TopicStatus =

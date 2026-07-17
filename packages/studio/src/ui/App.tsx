@@ -5,8 +5,8 @@
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 
-import { del, encodeRef, get, post, put } from "./api";
-import { statusIndex, topicRefFromFile } from "./derive";
+import { del, encodeRef, get, post, put, type ApiError } from "./api";
+import { statusIndex, topicKey, topicRefFromFile } from "./derive";
 import {
   editorMoved,
   editorTopic,
@@ -208,20 +208,30 @@ export function App(): React.JSX.Element {
   const flushSave = useCallback(
     async (eid: string): Promise<void> => {
       const e = stateRef.current.editors[eid];
-      if (!e || e.saving || validateEditor(e).length) return;
+      // Never autosave over an unresolved conflict — the user must pick Keep mine / Take theirs first.
+      if (!e || e.saving || e.conflict || validateEditor(e).length) return;
       const topic = editorTopic(e);
       const payload = JSON.stringify(topic);
       if (savedPayload.current.get(eid) === payload) return; // nothing new since the last good save
-      const body = editorMoved(e) && e.original ? { topic, previous: e.original } : { topic };
+      const body: Record<string, unknown> = { topic };
+      if (editorMoved(e) && e.original) body["previous"] = e.original;
+      if (e.baseVersion) body["baseVersion"] = e.baseVersion; // optimistic-concurrency token
       dispatch({ type: "editorSaving", eid, saving: true });
       try {
-        await post("/api/topics", body);
+        const resp = await post<{ version?: string }>("/api/topics", body);
         savedPayload.current.set(eid, payload);
-        dispatch({ type: "editorSaved", eid, identity: { path: topic.path, id: topic.id } });
+        dispatch({ type: "editorSaved", eid, identity: { path: topic.path, id: topic.id }, version: resp.version ?? null });
         await Promise.all([loadManifest(), loadNodes()]);
       } catch (err) {
-        // Remember the doomed payload so we don't hammer the server with an identical write; the error
-        // stays visible and any further edit (a new payload) retries.
+        const ae = err as ApiError;
+        const b = ae.body as { current?: Topic; currentVersion?: string } | undefined;
+        if (ae.status === 409 && b?.current && b.currentVersion) {
+          // Someone else changed this topic. Stop autosaving and surface a conflict banner.
+          savedPayload.current.set(eid, payload);
+          dispatch({ type: "editorConflict", eid, theirs: b.current, theirVersion: b.currentVersion });
+          return;
+        }
+        // Remember the doomed payload so we don't hammer the server; a further edit retries.
         savedPayload.current.set(eid, payload);
         dispatch({ type: "editorError", eid, error: errMsg(err) });
       }
@@ -231,7 +241,7 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     for (const [eid, e] of Object.entries(state.editors)) {
-      if (e.saving || validateEditor(e).length) continue;
+      if (e.saving || e.conflict || validateEditor(e).length) continue; // a conflict pauses autosave until resolved
       const payload = JSON.stringify(editorTopic(e));
       if (savedPayload.current.get(eid) === payload) continue;
       // A just-opened, untouched existing topic is already on disk — seed its baseline and don't
@@ -262,7 +272,23 @@ export function App(): React.JSX.Element {
   // ---- topic handlers ----------------------------------------------------------------------------
   const onNewTopic = (kind: Kind): void => dispatch({ type: "openEditorNew", kind, path: defaultNewPath() });
 
-  const onOpenTopic = (topic: Topic): void => dispatch({ type: "openEditorEdit", topic });
+  const onOpenTopic = (topic: Topic): void =>
+    dispatch({ type: "openEditorEdit", topic, version: state.manifest?.versions?.[topicKey(topic)] ?? null });
+
+  // Conflict resolution: "keep mine" re-bases on the server's copy and lets autosave overwrite it;
+  // "take theirs" replaces the working copy with the server's and marks it already-saved.
+  const keepMine = (eid: string): void => {
+    dispatch({ type: "editorResolveKeepMine", eid });
+    savedPayload.current.delete(eid); // force the autosave loop to re-fire and push my version
+  };
+  const takeTheirs = (eid: string): void => {
+    const e = state.editors[eid];
+    if (!e?.conflict) return;
+    const t = e.conflict.theirs;
+    dispatch({ type: "editorResolveTakeTheirs", eid });
+    // The editor now matches the server, so record that payload as saved (no spurious re-write).
+    savedPayload.current.set(eid, JSON.stringify({ id: t.id, path: t.path, title: t.title, kind: t.kind, questions: t.questions }));
+  };
 
   const onCloseEditor = (eid: string): void => {
     const e = state.editors[eid];
@@ -448,6 +474,8 @@ export function App(): React.JSX.Element {
                 editors={Object.values(state.editors)}
                 onCloseEditor={onCloseEditor}
                 onDeleteEditor={(eid) => void deleteTopic(eid)}
+                onKeepMine={keepMine}
+                onTakeTheirs={takeTheirs}
                 scopes={state.identity?.scopes ?? [[]]}
               />
             </main>

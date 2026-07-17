@@ -8,6 +8,8 @@
 
 export interface ApiError extends Error {
   status: number;
+  /** The parsed response body, so callers can read structured detail (e.g. a 409's `current` topic). */
+  body: unknown;
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -27,6 +29,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
         : res.statusText || `HTTP ${String(res.status)}`;
     const err = new Error(message) as ApiError;
     err.status = res.status;
+    err.body = data;
     throw err;
   }
   return data as T;

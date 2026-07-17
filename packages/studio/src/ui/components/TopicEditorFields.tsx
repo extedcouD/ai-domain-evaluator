@@ -25,6 +25,8 @@ export function TopicEditorFields(props: {
   dispatch: Dispatch<Action>;
   onClose: () => void;
   onDelete: () => void;
+  onKeepMine: () => void;
+  onTakeTheirs: () => void;
 }): React.JSX.Element {
   const { editor: e, dispatch } = props;
   const eid = e.eid;
@@ -78,6 +80,19 @@ export function TopicEditorFields(props: {
         <span className="acc-caret">▴</span>
         <span className="acc-bar-label">Collapse</span>
       </button>
+      {e.conflict ? (
+        <div className="conflict-banner">
+          <span className="conflict-msg">This topic changed on the server since you opened it — autosave paused.</span>
+          <div className="conflict-actions">
+            <button className="btn btn-secondary sm" type="button" onClick={props.onTakeTheirs}>
+              Take theirs
+            </button>
+            <button className="btn danger sm" type="button" onClick={props.onKeepMine}>
+              Keep mine
+            </button>
+          </div>
+        </div>
+      ) : null}
       {result ? (
         <div className="acc-ctx">
           <StatusPill status={result.status} />

@@ -15,6 +15,7 @@
  * cannot escape the KB directory.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -172,7 +173,7 @@ async function handleKb(
       review: ctx.review !== null,
     });
   }
-  if (method === "GET" && path === "/api/manifest") return sendJson(res, 200, readManifestDir(ws.kbDir));
+  if (method === "GET" && path === "/api/manifest") return sendJson(res, 200, manifestWithVersions(ws.kbDir));
   if (method === "POST" && path === "/api/topics") return await postTopic(req, res, ws, policy);
   if (method === "DELETE" && path.startsWith("/api/topics/")) return await deleteTopic(res, ws, path, policy);
   if (method === "PUT" && path === "/api/meta") return await putMeta(req, res, ws, policy);
@@ -305,6 +306,22 @@ function collectSubtree(kbDir: string, prefix: string[]): { path: string[]; id: 
 
 // ---- topics ------------------------------------------------------------------------------------
 
+/** A short content hash used as an optimistic-concurrency token for a topic file. */
+function version(content: string): string {
+  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+
+/** The manifest plus a `versions` map (topicKey → content hash) the UI sends back as `baseVersion`. */
+function manifestWithVersions(kbDir: string): Record<string, unknown> {
+  const manifest = readManifestDir(kbDir);
+  const versions: Record<string, string> = {};
+  for (const t of manifest.topics) {
+    const file = topicPath(kbDir, t.path, t.id);
+    if (existsSync(file)) versions[[...t.path, t.id].join("/")] = version(readFileSync(file, "utf8"));
+  }
+  return { ...manifest, versions };
+}
+
 async function postTopic(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
   const { kbDir, git, actor } = ws;
   const body = await readBody(req);
@@ -316,18 +333,31 @@ async function postTopic(req: IncomingMessage, res: ServerResponse, ws: Workspac
   guardScope(policy, actor, topic.path, prev ? "move" : "save");
   if (prev) guardScope(policy, actor, prev.path, "move"); // moving OUT of a node needs scope there too
 
+  // Optimistic concurrency: if the caller sent the version it edited from and the on-disk file has moved
+  // since (another tab, or a shared workspace), refuse with 409 + the current copy instead of clobbering.
+  const baseVersion = typeof body["baseVersion"] === "string" ? body["baseVersion"] : null;
+  const checkFile = prev ? prev.file : path;
+  if (baseVersion !== null && existsSync(checkFile)) {
+    const onDisk = readFileSync(checkFile, "utf8");
+    const currentVersion = version(onDisk);
+    if (currentVersion !== baseVersion) {
+      return sendJson(res, 409, { error: "this topic changed since you opened it", current: parseTopic(parseYaml(onDisk)), currentVersion });
+    }
+  }
+
+  const content = renderTopicFile(topic);
   await git.commit({
     actor,
     message: `kb: ${prev ? "rename" : "save"} topic ${topic.path.join("/")}/${topic.id}`,
     // Write the new file first, then delete the old one, so a failure never orphans (unchanged order).
     mutate: () => {
       mkdirSync(dirname(path), { recursive: true });
-      git.atomicWrite(path, renderTopicFile(topic));
+      git.atomicWrite(path, content);
       if (prev && existsSync(prev.file)) rmSync(prev.file);
     },
   });
 
-  sendJson(res, 200, { ok: true });
+  sendJson(res, 200, { ok: true, version: version(content) });
 }
 
 /**

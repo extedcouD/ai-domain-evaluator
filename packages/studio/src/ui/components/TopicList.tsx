@@ -83,6 +83,8 @@ export function TopicList(props: {
   editors: EditorState[];
   onCloseEditor: (eid: string) => void;
   onDeleteEditor: (eid: string) => void;
+  onKeepMine: (eid: string) => void;
+  onTakeTheirs: (eid: string) => void;
   /** The user's write scopes (path-prefixes); `[[]]` = root = everything (admin / open mode). */
   scopes: string[][];
 }): React.JSX.Element {
@@ -120,6 +122,8 @@ export function TopicList(props: {
       dispatch={dispatch}
       onClose={() => props.onCloseEditor(ed.eid)}
       onDelete={() => props.onDeleteEditor(ed.eid)}
+      onKeepMine={() => props.onKeepMine(ed.eid)}
+      onTakeTheirs={() => props.onTakeTheirs(ed.eid)}
     />
   );
 

@@ -1775,3 +1775,25 @@ select.run {
   display: flex;
   gap: var(--space-2);
 }
+
+/* ---- optimistic-concurrency conflict banner (Phase 4) ---- */
+.conflict-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-accent-2);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-accent-2) 10%, transparent);
+}
+.conflict-msg {
+  font-size: 12.5px;
+  color: var(--color-text);
+}
+.conflict-actions {
+  display: flex;
+  gap: var(--space-2);
+}

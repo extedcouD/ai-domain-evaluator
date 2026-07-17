@@ -163,6 +163,37 @@ describe("KB Studio server", () => {
     expect(existsSync(join(s.kbDir, "topics", "onboard", "old-id.yaml"))).toBe(true);
   });
 
+  it("optimistic concurrency: a stale baseVersion is 409'd (with the current copy), a fresh one wins", async () => {
+    const s = await start((kb) => seedTopic(kb, ["protocol"], "race"));
+    const m = await req<{ versions: Record<string, string> }>(s.base, "GET", "/api/manifest");
+    const v0 = m.json.versions["protocol/race"];
+    expect(v0).toBeTruthy();
+
+    // First save from the real version succeeds and returns the new version.
+    const t2 = { id: "race", path: ["protocol"], title: "v2", kind: "real", questions: ["a", "b"] };
+    const first = await req<{ version: string }>(s.base, "POST", "/api/topics", { topic: t2, baseVersion: v0 });
+    expect(first.status).toBe(200);
+    expect(first.json.version).not.toBe(v0);
+
+    // A second save still using the ORIGINAL (now stale) version is refused, with the server's current copy.
+    const t3 = { id: "race", path: ["protocol"], title: "v3", kind: "real", questions: ["a", "b"] };
+    const stale = await req<{ currentVersion: string; current: { title: string } }>(s.base, "POST", "/api/topics", { topic: t3, baseVersion: v0 });
+    expect(stale.status).toBe(409);
+    expect(stale.json.currentVersion).toBe(first.json.version);
+    expect(stale.json.current.title).toBe("v2");
+
+    // Retrying with the fresh version wins.
+    const retry = await req(s.base, "POST", "/api/topics", { topic: t3, baseVersion: first.json.version });
+    expect(retry.status).toBe(200);
+  });
+
+  it("a save without baseVersion skips the optimistic check (backward compatible)", async () => {
+    const s = await start((kb) => seedTopic(kb, ["protocol"], "nov"));
+    const topic = { id: "nov", path: ["protocol"], title: "changed", kind: "real", questions: ["a", "b"] };
+    const { status } = await req(s.base, "POST", "/api/topics", { topic });
+    expect(status).toBe(200);
+  });
+
   it("rejects an invalid topic with 422 and writes nothing", async () => {
     const s = await start();
     const topic = { id: "bad-kind", path: ["protocol"], title: "X", kind: "nonsense", questions: ["a"] };

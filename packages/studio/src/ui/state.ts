@@ -39,6 +39,10 @@ export interface EditorState {
   dirty: boolean;
   saving: boolean;
   error: string | null;
+  /** The content version this editor was opened/last-saved from — sent as `baseVersion` so a stale save 409s. */
+  baseVersion: string | null;
+  /** Set when a save 409'd: the server's current copy, offered as "take theirs". */
+  conflict: { theirs: Topic; theirVersion: string } | null;
 }
 
 export interface Toast {
@@ -128,14 +132,17 @@ export type Action =
   | { type: "toggleKindFilter"; kind: Kind }
   | { type: "toggleStatusFilter"; bucket: StatusBucket }
   // editor (each targets one open editor by `eid`, except the "open" actions which mint one)
-  | { type: "openEditorEdit"; topic: Topic }
+  | { type: "openEditorEdit"; topic: Topic; version: string | null }
   | { type: "openEditorNew"; kind: Kind; path: string[] }
   | { type: "editorField"; eid: string; field: "title" | "id"; value: string }
   | { type: "editorSetKind"; eid: string; kind: Kind }
   | { type: "editorSetQuestions"; eid: string; questions: string[] }
   | { type: "editorSaving"; eid: string; saving: boolean }
-  | { type: "editorSaved"; eid: string; identity: { path: string[]; id: string } }
+  | { type: "editorSaved"; eid: string; identity: { path: string[]; id: string }; version: string | null }
   | { type: "editorError"; eid: string; error: string | null }
+  | { type: "editorConflict"; eid: string; theirs: Topic; theirVersion: string }
+  | { type: "editorResolveKeepMine"; eid: string }
+  | { type: "editorResolveTakeTheirs"; eid: string }
   | { type: "editorDuplicate"; eid: string }
   | { type: "closeEditor"; eid: string }
   // coverage
@@ -152,7 +159,7 @@ export type Action =
   | { type: "setProposalsOpen"; open: boolean }
   | { type: "proposalsLoaded"; proposals: Proposal[] };
 
-function editorFor(eid: string, topic: Topic): EditorState {
+function editorFor(eid: string, topic: Topic, baseVersion: string | null): EditorState {
   return {
     eid,
     original: { path: topic.path, id: topic.id },
@@ -165,6 +172,8 @@ function editorFor(eid: string, topic: Topic): EditorState {
     dirty: false,
     saving: false,
     error: null,
+    baseVersion,
+    conflict: null,
   };
 }
 
@@ -181,6 +190,8 @@ function newEditor(eid: string, kind: Kind, path: string[]): EditorState {
     dirty: false,
     saving: false,
     error: null,
+    baseVersion: null,
+    conflict: null,
   };
 }
 
@@ -246,7 +257,7 @@ export function reducer(state: State, action: Action): State {
       // Re-opening a topic that's already open is a no-op (its accordion stays as-is).
       if (openEidFor(state, action.topic)) return state;
       const eid = `e${String(state.nextId)}`;
-      return { ...state, editors: { ...state.editors, [eid]: editorFor(eid, action.topic) }, nextId: state.nextId + 1 };
+      return { ...state, editors: { ...state.editors, [eid]: editorFor(eid, action.topic, action.version) }, nextId: state.nextId + 1 };
     }
 
     case "openEditorNew": {
@@ -280,11 +291,14 @@ export function reducer(state: State, action: Action): State {
     case "editorSaved": {
       const e = state.editors[action.eid];
       if (!e) return state;
-      // Stamp the now-on-disk identity so the next id change renames from it; clear saving/error.
+      // Stamp the now-on-disk identity + version so the next save's `baseVersion` matches; clear saving/error.
       // `dirty` is left to the value it holds — the autosave loop compares payloads, not this flag.
       return {
         ...state,
-        editors: { ...state.editors, [action.eid]: { ...e, original: action.identity, saving: false, dirty: false, error: null } },
+        editors: {
+          ...state.editors,
+          [action.eid]: { ...e, original: action.identity, baseVersion: action.version, saving: false, dirty: false, error: null, conflict: null },
+        },
       };
     }
 
@@ -292,6 +306,50 @@ export function reducer(state: State, action: Action): State {
       const e = state.editors[action.eid];
       if (!e) return state;
       return { ...state, editors: { ...state.editors, [action.eid]: { ...e, saving: false, error: action.error } } };
+    }
+
+    case "editorConflict": {
+      const e = state.editors[action.eid];
+      if (!e) return state;
+      return {
+        ...state,
+        editors: { ...state.editors, [action.eid]: { ...e, saving: false, conflict: { theirs: action.theirs, theirVersion: action.theirVersion } } },
+      };
+    }
+
+    case "editorResolveKeepMine": {
+      const e = state.editors[action.eid];
+      if (!e || !e.conflict) return state;
+      // Accept the server's copy as the new base, so the next save overwrites it with my working copy.
+      return {
+        ...state,
+        editors: { ...state.editors, [action.eid]: { ...e, baseVersion: e.conflict.theirVersion, conflict: null, dirty: true, error: null } },
+      };
+    }
+
+    case "editorResolveTakeTheirs": {
+      const e = state.editors[action.eid];
+      if (!e || !e.conflict) return state;
+      const t = e.conflict.theirs;
+      return {
+        ...state,
+        editors: {
+          ...state.editors,
+          [action.eid]: {
+            ...e,
+            title: t.title,
+            id: t.id,
+            idEdited: true,
+            path: t.path,
+            kind: t.kind,
+            questions: t.questions.length ? t.questions : [""],
+            baseVersion: e.conflict.theirVersion,
+            conflict: null,
+            dirty: false,
+            error: null,
+          },
+        },
+      };
     }
 
     case "editorDuplicate": {
@@ -309,6 +367,8 @@ export function reducer(state: State, action: Action): State {
         dirty: true,
         saving: false,
         error: null,
+        baseVersion: null, // a fresh file: no prior version to guard against
+        conflict: null,
       };
       return { ...state, editors: { ...state.editors, [eid]: copy }, nextId: state.nextId + 1 };
     }
