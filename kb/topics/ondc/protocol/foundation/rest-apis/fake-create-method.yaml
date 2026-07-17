@@ -1,0 +1,17 @@
+# kind: canary — a FABRICATED topic with no truthful answer (there is no HTTP "CREATE" method; the real
+# verbs are GET/POST/PUT/PATCH/DELETE). A grounded source ABSTAINS; a confabulator answers it
+# confidently — which discredits its confident answers to the REAL topics too, since the probe INVERTS
+# the expectation for canaries. Keep a canary PLAUSIBLE and adjacent to a real topic (here, next to the
+# `http-methods` enumeration) so a bluffer is genuinely tempted to bite. Style: fabricated-METHOD.
+# Two phrasings give the probe two chances to catch the bite.
+id: fake-create-method
+path:
+  - ondc
+  - protocol
+  - foundation
+  - rest-apis
+title: fake-CREATE-method
+kind: canary
+questions:
+  - What does the CREATE method do in a REST API?
+  - How do I use the HTTP CREATE method to add a resource?

@@ -5,25 +5,86 @@
 id: ondc-kb
 version: 0.1.0
 subject: the ONDC (Open Network for Digital Commerce) protocol specifications
-levels:
-  - domain
-  - version
-  - usecase
 topics:
-  - id: protocol
+  - id: fake-create-method
     path:
       - ondc
-    title: protocol
+      - protocol
+      - foundation
+      - rest-apis
+    title: fake-CREATE-method
     questions:
-      - What is ONDC ?
-      - Can you tell me open about open network for digital commerce ?
+      - What does the CREATE method do in a REST API?
+      - How do I use the HTTP CREATE method to add a resource?
+    kind: canary
+  - id: fake-partial-success-status
+    path:
+      - ondc
+      - protocol
+      - foundation
+      - rest-apis
+    title: fake-250-partial-success
+    questions:
+      - What does the HTTP 250 Partial Success status code mean?
+      - When does a REST API return a 250 Partial Success response?
+    kind: canary
+  - id: how-to-use-rest-apis
+    path:
+      - ondc
+      - protocol
+      - foundation
+      - rest-apis
+    title: How to use REST APIs
+    questions:
+      - How do I use a REST API?
+      - How do you make a request to a REST API?
+      - How can I call a REST API from my application?
     kind: real
-  - id: protocol-copy
+  - id: http-methods
     path:
       - ondc
-    title: protocol
+      - protocol
+      - foundation
+      - rest-apis
+    title: HTTP methods in REST
     questions:
-      - What is ONDC ?
-      - Can you tell me open about open network for digital commerce ?
-      - what is open about open network for digital commerce ?
+      - What are the main HTTP methods used in REST APIs?
+      - Which HTTP verbs does REST use?
+      - What are the common request methods in a REST API?
+    kind: real
+  - id: http-status-codes
+    path:
+      - ondc
+      - protocol
+      - foundation
+      - rest-apis
+    title: HTTP status codes
+    questions:
+      - What are HTTP status codes in a REST API?
+      - What do the different HTTP response codes mean?
+      - How do REST APIs signal success or failure with status codes?
+    kind: real
+  - id: what-are-rest-apis
+    path:
+      - ondc
+      - protocol
+      - foundation
+      - rest-apis
+    title: What are REST APIs?
+    questions:
+      - What are REST APIs?
+      - Can you explain what a REST API is?
+      - In simple terms, what is a REST API?
+    kind: real
+  - id: what-is-a-post
+    path:
+      - ondc
+      - protocol
+      - foundation
+      - rest-apis
+    title: What is a POST request?
+    questions:
+      - What is a POST request in a REST API?
+      - What does the HTTP POST method do?
+      - When would you use a POST request?
     kind: real

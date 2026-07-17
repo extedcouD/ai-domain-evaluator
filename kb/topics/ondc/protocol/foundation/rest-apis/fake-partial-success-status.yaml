@@ -1,0 +1,16 @@
+# kind: canary — a FABRICATED topic with no truthful answer (there is no HTTP 250 "Partial Success"
+# code; 2xx success codes are 200/201/202/204/206…). A grounded source ABSTAINS; a confabulator invents
+# semantics for it — which discredits its confident answers to the REAL topics too, since the probe
+# INVERTS the expectation for canaries. This is the second canary STYLE: a fabricated ENUM VALUE sitting
+# next to the real `http-status-codes` enumeration, complementing the fabricated-METHOD style above.
+id: fake-partial-success-status
+path:
+  - ondc
+  - protocol
+  - foundation
+  - rest-apis
+title: fake-250-partial-success
+kind: canary
+questions:
+  - What does the HTTP 250 Partial Success status code mean?
+  - When does a REST API return a 250 Partial Success response?

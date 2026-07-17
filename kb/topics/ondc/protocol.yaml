@@ -1,9 +1,0 @@
-# Real topic — a genuine topic the source SHOULD be able to answer.
-id: protocol
-path:
-  - ondc
-title: protocol
-kind: real
-questions:
-  - What is ONDC ?
-  - Can you tell me open about open network for digital commerce ?
