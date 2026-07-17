@@ -170,6 +170,22 @@ describe("review flow", () => {
     expect(after.json.topics.map((t) => t.id).sort()).toEqual(["bob-topic", "landed-on-main", "seed-a"]);
   });
 
+  it("merging fast-forwards the deployment's local main to the merged remote", async () => {
+    const s = await startReview();
+    await reqAs(s.base, "bob@corp.com", "POST", "/api/topics", topicBody("bob-topic"));
+    const pr = await reqAs<Proposal>(s.base, "bob@corp.com", "POST", "/api/proposals");
+
+    // Simulate the PR landing on the forge: origin/main advances to Bob's branch tip.
+    git(s.repoDir, ["push", "-q", "origin", "user/bob-corp-com:main"]);
+    // Local main is still at the seed until the merge route refreshes it.
+    expect(git(s.repoDir, ["log", "main", "--format=%s"]).trim()).toBe("seed");
+
+    const merged = await reqAs(s.base, "admin@corp.com", "POST", `/api/proposals/${String(pr.json.number)}/merge`);
+    expect(merged.status).toBe(200);
+    // Now the deployment's local main includes Bob's merged commit.
+    expect(git(s.repoDir, ["log", "main", "--format=%s"]).trim()).toContain("kb: save topic protocol/bob-topic");
+  });
+
   it("proposal routes report not-enabled when no Forge is configured", async () => {
     const s = await startReview(false);
     const r = await reqAs<{ error: string }>(s.base, "bob@corp.com", "POST", "/api/proposals");

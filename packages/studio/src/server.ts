@@ -37,7 +37,7 @@ import {
   topicPath,
   TOPIC_ID_RE,
 } from "./manifest-folder";
-import { isAdmin, listProposals, mergeProposal, submitForReview, syncFromMain, type ReviewConfig } from "./propose";
+import { isAdmin, listProposals, mergeProposal, refreshBase, submitForReview, syncFromMain, type ReviewConfig } from "./propose";
 import { singleWorkspaceRouter, worktreeRouter, type Workspace, type WorkspaceRouter } from "./workspace";
 
 export interface StudioOptions {
@@ -93,6 +93,8 @@ interface Ctx {
   coverageDir: string;
   /** The CANONICAL KB (the main tree), the one authoritative source of `access.yaml` — never a worktree. */
   canonicalKbDir: string;
+  /** The git repo root in multi-user mode (to fast-forward local `main` after a merge); null in single mode. */
+  repoDir: string | null;
   resolveActor: (req: IncomingMessage) => Actor;
   router: WorkspaceRouter;
   review: ReviewConfig | null;
@@ -107,6 +109,7 @@ export function createStudioServer(opts: StudioOptions): Server {
   const ctx: Ctx = {
     coverageDir: opts.coverageDir,
     canonicalKbDir: opts.kbDir,
+    repoDir: opts.multiUser?.repoDir ?? null,
     resolveActor,
     router,
     review: opts.review ?? null,
@@ -232,10 +235,19 @@ async function postMergeProposal(res: ServerResponse, ctx: Ctx, ws: Workspace, p
   if (!admin) throw new Forbidden("only an admin can merge a proposal");
   try {
     await mergeProposal(review, n);
-    sendJson(res, 200, { ok: true });
   } catch (err) {
     throw new BadGateway(err instanceof Error ? err.message : String(err));
   }
+  // The PR is merged on the forge; catch the deployment's local `main` up so drafts + new worktrees see
+  // it. Best-effort — a failure here doesn't undo the merge, so it must not fail the response.
+  if (ctx.repoDir) {
+    try {
+      await refreshBase(ctx.repoDir, review.remote, review.baseBranch);
+    } catch (err) {
+      process.stderr.write(`kb-studio: base refresh after merge failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+  sendJson(res, 200, { ok: true });
 }
 
 /** Bring the base branch into the caller's draft (`POST /api/sync`); a conflict is reported, not thrown. */

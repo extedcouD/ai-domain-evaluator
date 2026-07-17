@@ -4,6 +4,8 @@
  * `syncFromMain` keeps a long-lived draft current. These are thin, pure operations over a `Workspace`
  * (its git + branch) and a `Forge` (the PR host) — the server layers HTTP + authorization on top.
  */
+import { simpleGit } from "simple-git";
+
 import type { Forge, Proposal } from "./forge";
 import type { Workspace } from "./workspace";
 
@@ -47,4 +49,16 @@ export function syncFromMain(ws: Workspace, review: ReviewConfig): Promise<{ mer
 /** Is the workspace's actor allowed to merge? */
 export function isAdmin(review: ReviewConfig, ws: Workspace): boolean {
   return review.admins.includes(ws.actor.email);
+}
+
+/**
+ * After a PR merges on the forge, fast-forward the deployment's LOCAL base branch to the remote — so new
+ * worktrees branch from the merged KB and `syncFromMain` pulls the landed work. Runs in the main worktree
+ * (which is on `base` and never edited directly, so `--ff-only` always applies). Best-effort: the caller
+ * catches failures, since the merge itself already succeeded on the forge.
+ */
+export async function refreshBase(repoDir: string, remote: string, base: string): Promise<void> {
+  const git = simpleGit(repoDir);
+  await git.fetch(remote, base);
+  await git.raw(["merge", "--ff-only", `${remote}/${base}`]);
 }

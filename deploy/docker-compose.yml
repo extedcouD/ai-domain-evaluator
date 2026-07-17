@@ -1,0 +1,66 @@
+# KB Studio — production stack: Caddy (TLS) -> oauth2-proxy (SSO) -> studio (node) -> KB git repo.
+#
+# Trust boundary: ONLY Caddy publishes ports (80/443). `studio` and `auth` are reachable only on the
+# internal Docker network, so the trusted identity header can't be spoofed from outside. Run from this
+# directory: `docker compose --env-file .env up -d --build`.
+services:
+  studio:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      KB_MULTI_USER: "1"
+      KB_GITHUB_REPO: ${KB_GITHUB_REPO} # owner/repo of the KB (repo root = the KB)
+      KB_GITHUB_TOKEN: ${KB_GITHUB_TOKEN} # server token: fetch/push branches + open/merge PRs
+      KB_ADMINS: ${KB_ADMINS} # fallback admin list (access.yaml in the repo overrides)
+      KB_REPO_DIR: /data/kb-repo
+      KB_DIR: /data/kb-repo
+      KB_WORKTREES_DIR: /data/worktrees
+    volumes:
+      - kb-data:/data # the KB repo + worktrees — put this on a durable EBS volume
+    expose:
+      - "4319" # internal only — never published to the host
+    restart: unless-stopped
+
+  auth:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    depends_on:
+      - studio
+    command:
+      - --http-address=0.0.0.0:4180
+      - --reverse-proxy=true # trust X-Forwarded-* from Caddy in front
+      - --upstream=http://studio:4319 # proxy authenticated requests to the studio
+      - --provider=github # swap to `google` (+ --oidc-issuer-url) for Google Workspace
+      - --github-org=${GITHUB_ORG} # restrict to your GitHub org
+      - --email-domain=* # or lock to your domain, e.g. yourcompany.com
+      - --cookie-secure=true
+      - --pass-user-headers=true # injects X-Forwarded-Email / X-Forwarded-User to the studio
+      - --set-xauthrequest=true
+    environment:
+      OAUTH2_PROXY_CLIENT_ID: ${OAUTH_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET} # 32 bytes: `openssl rand -base64 32`
+      OAUTH2_PROXY_REDIRECT_URL: https://${KB_HOST}/oauth2/callback
+    expose:
+      - "4180"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - auth
+    ports:
+      - "80:80" # ACME HTTP challenge
+      - "443:443" # HTTPS — the only public entrypoint
+    environment:
+      KB_HOST: ${KB_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  kb-data:
+  caddy-data:
+  caddy-config:
