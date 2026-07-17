@@ -239,7 +239,10 @@ describe("KB Studio server", () => {
     const blocked = await req(s.base, "DELETE", "/api/nodes/protocol");
     expect(blocked.status).toBe(400);
     expect(existsSync(join(s.kbDir, "topics", "protocol", "sub", "keep.yaml"))).toBe(true);
-    const cascade = await req(s.base, "DELETE", "/api/nodes/protocol?cascade=1");
+    // A cascade needs the type-to-confirm token (the node path) as well as ?cascade=1.
+    const noConfirm = await req(s.base, "DELETE", "/api/nodes/protocol?cascade=1");
+    expect(noConfirm.status).toBe(400);
+    const cascade = await req(s.base, "DELETE", "/api/nodes/protocol?cascade=1&confirm=protocol");
     expect(cascade.status).toBe(200);
     expect(existsSync(join(s.kbDir, "topics", "protocol"))).toBe(false);
   });

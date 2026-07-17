@@ -22,7 +22,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ConfigError, rollup, type CoverageReport, type Topic } from "@evaluator/core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
-import { GitStore, type Actor } from "./git-store";
+import { canWrite, isAdmin as isAccessAdmin, readAccess, roleFor, scopesFor, type AccessPolicy } from "./access";
+import { makeActorResolver, type Actor } from "./actor";
+import { createGitHubForge } from "./forge";
 import {
   declaredLevels,
   listNodes,
@@ -34,12 +36,34 @@ import {
   topicPath,
   TOPIC_ID_RE,
 } from "./manifest-folder";
+import { isAdmin, listProposals, mergeProposal, submitForReview, syncFromMain, type ReviewConfig } from "./propose";
+import { singleWorkspaceRouter, worktreeRouter, type Workspace, type WorkspaceRouter } from "./workspace";
 
 export interface StudioOptions {
-  /** The KB folder: `manifest.meta.yaml` + `topics/<seg…>/*.yaml` (+ the generated `manifest.yaml`). */
+  /**
+   * The KB folder: `manifest.meta.yaml` + `topics/<seg…>/*.yaml` (+ the generated `manifest.yaml`). In
+   * multi-user mode this is the MAIN worktree's KB — a read reference whose repo-relative location is
+   * mirrored into each per-user worktree; requests never write it directly.
+   */
   kbDir: string;
-  /** Where coverage runs are written: `<id>-<epoch>.json`, as the CLI writes them. */
+  /** Where coverage runs are written: `<id>-<epoch>.json`, as the CLI writes them (shared, read-only). */
   coverageDir: string;
+  /**
+   * Enable branch-per-user routing. When set, each authenticated actor is routed to their own git
+   * worktree on `user/<login>` and the identity header is trusted; when absent, everyone shares `kbDir`
+   * (single-workspace — the Phase 0 behavior every existing test relies on).
+   */
+  multiUser?: {
+    /** The git repo root (its main worktree holds the canonical KB). */
+    repoDir: string;
+    /** A directory OUTSIDE the main tree that holds the per-user worktrees. */
+    worktreesDir: string;
+  };
+  /**
+   * The review flow (Phase 2): push a user branch + open/merge PRs via a `Forge`. Only meaningful with
+   * `multiUser`. Absent → the `/api/proposals` + `/api/sync` routes report "review not enabled".
+   */
+  review?: ReviewConfig;
 }
 
 const REAL_HEADER = "# Real topic — a genuine topic the source SHOULD be able to answer.\n";
@@ -58,56 +82,166 @@ class BadRequest extends Error {}
 class NotFound extends Error {}
 /** The target changed under the caller (stale optimistic-concurrency token) → 409. Used from Phase 4. */
 class Conflict extends Error {}
-/** The actor is not allowed to touch this path (topic scoping) → 403. Used from Phase 3. */
+/** The actor is not allowed to touch this path (topic scoping / merge) → 403. */
 class Forbidden extends Error {}
+/** An upstream (the PR forge, or a git push) failed → 502, so the message reaches the user, not a 500. */
+class BadGateway extends Error {}
 
-/** Everything a request handler needs: the injected dirs plus the git safety net over the KB. */
-interface Ctx extends StudioOptions {
-  git: GitStore;
+/** Everything a request handler needs beyond its own workspace: shared dirs + the per-request routers. */
+interface Ctx {
+  coverageDir: string;
+  /** The CANONICAL KB (the main tree), the one authoritative source of `access.yaml` — never a worktree. */
+  canonicalKbDir: string;
+  resolveActor: (req: IncomingMessage) => Actor;
+  router: WorkspaceRouter;
+  review: ReviewConfig | null;
 }
 
-/**
- * Until SSO lands (Phase 1), every commit is attributed to a single placeholder actor. `resolveActor`
- * will replace this with the identity the auth proxy injects, threaded in exactly the same spot.
- */
-const DEFAULT_ACTOR: Actor = { name: "KB Studio", email: "studio@localhost" };
-
 export function createStudioServer(opts: StudioOptions): Server {
-  const ctx: Ctx = { ...opts, git: new GitStore(opts.kbDir) };
+  // Multi-user mode is where the identity header is trusted; single mode never reads it (DEFAULT_ACTOR).
+  const resolveActor = makeActorResolver({ trustProxy: opts.multiUser !== undefined });
+  const router: WorkspaceRouter = opts.multiUser
+    ? worktreeRouter({ repoDir: opts.multiUser.repoDir, worktreesDir: opts.multiUser.worktreesDir, kbDir: opts.kbDir })
+    : singleWorkspaceRouter(opts.kbDir);
+  const ctx: Ctx = {
+    coverageDir: opts.coverageDir,
+    canonicalKbDir: opts.kbDir,
+    resolveActor,
+    router,
+    review: opts.review ?? null,
+  };
   return createServer((req, res) => {
     void handle(req, res, ctx);
   });
 }
 
+/** Enforce topic scoping before a write. A no-op in open mode (no `access.yaml`). */
+function guardScope(policy: AccessPolicy | null, actor: Actor, path: string[], verb = "edit"): void {
+  if (!canWrite(policy, actor.email, path)) {
+    throw new Forbidden(`not allowed to ${verb} "${path.join("/")}" — outside your assigned scope`);
+  }
+}
+
+/** Enforce an admin-only op (identity edits). Only bites when an `access.yaml` policy exists. */
+function guardAdmin(policy: AccessPolicy | null, actor: Actor, verb: string): void {
+  if (policy !== null && !isAccessAdmin(policy, actor.email)) throw new Forbidden(`only an admin can ${verb}`);
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
-  const { kbDir, coverageDir } = ctx;
-  const actor = DEFAULT_ACTOR;
   try {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     const method = req.method ?? "GET";
 
+    // Non-workspace routes: the SPA shell, static assets, and the shared (read-only) coverage reports.
     if (method === "GET" && path === "/") return serveHtml(res);
-    if (method === "GET" && path === "/api/manifest") return sendJson(res, 200, readManifestDir(kbDir));
-    if (method === "POST" && path === "/api/topics") return await postTopic(req, res, ctx, actor);
-    if (method === "DELETE" && path.startsWith("/api/topics/")) return await deleteTopic(res, ctx, path, actor);
-    if (method === "PUT" && path === "/api/meta") return await putMeta(req, res, ctx, actor);
-    if (method === "POST" && path === "/api/export") return postExport(res, ctx);
-    if (method === "GET" && path === "/api/nodes") return sendJson(res, 200, { nodes: listNodes(kbDir) });
-    if (method === "POST" && path === "/api/nodes") return await postNode(req, res, ctx, actor);
-    if (method === "PUT" && path.startsWith("/api/nodes/")) return await putNode(req, res, ctx, path, actor);
-    if (method === "DELETE" && path.startsWith("/api/nodes/")) return await deleteNode(req, res, ctx, path, actor);
-    if (method === "GET" && path === "/api/history") return await getHistory(req, res, ctx);
-    if (method === "POST" && path === "/api/restore") return await postRestore(req, res, ctx, actor);
-    if (method === "GET" && path === "/api/coverage") return listCoverage(res, coverageDir);
-    if (method === "GET" && path.startsWith("/api/coverage/")) return getCoverage(req, res, coverageDir, path);
-
-    // Anything else GET and not under /api is a front-end asset (or the SPA fallback).
+    if (method === "GET" && path === "/api/coverage") return listCoverage(res, ctx.coverageDir);
+    if (method === "GET" && path.startsWith("/api/coverage/")) return getCoverage(req, res, ctx.coverageDir, path);
     if (method === "GET" && !path.startsWith("/api/")) return serveStatic(res, path);
+
+    // Everything else under /api is workspace-scoped: resolve the caller, then their worktree.
+    if (path.startsWith("/api/")) {
+      const actor = ctx.resolveActor(req);
+      const ws = await ctx.router.resolve(actor);
+      return await handleKb(req, res, ctx, ws, method, path);
+    }
 
     sendJson(res, 404, { error: "not found" });
   } catch (err) {
     sendError(res, err);
   }
+}
+
+/** Dispatch the workspace-scoped routes against the caller's resolved workspace. */
+async function handleKb(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: Ctx,
+  ws: Workspace,
+  method: string,
+  path: string,
+): Promise<void> {
+  // The scoping policy comes from the CANONICAL KB (main), so a user's worktree copy can't self-escalate.
+  const policy = readAccess(ctx.canonicalKbDir);
+
+  if (method === "GET" && path === "/api/whoami") {
+    return sendJson(res, 200, {
+      actor: ws.actor,
+      branch: ws.branch,
+      role: roleFor(policy, ws.actor.email),
+      scopes: scopesFor(policy, ws.actor.email),
+      review: ctx.review !== null,
+    });
+  }
+  if (method === "GET" && path === "/api/manifest") return sendJson(res, 200, readManifestDir(ws.kbDir));
+  if (method === "POST" && path === "/api/topics") return await postTopic(req, res, ws, policy);
+  if (method === "DELETE" && path.startsWith("/api/topics/")) return await deleteTopic(res, ws, path, policy);
+  if (method === "PUT" && path === "/api/meta") return await putMeta(req, res, ws, policy);
+  if (method === "POST" && path === "/api/export") return postExport(res, ws);
+  if (method === "GET" && path === "/api/nodes") return sendJson(res, 200, { nodes: listNodes(ws.kbDir) });
+  if (method === "POST" && path === "/api/nodes") return await postNode(req, res, ws, policy);
+  if (method === "PUT" && path.startsWith("/api/nodes/")) return await putNode(req, res, ws, path, policy);
+  if (method === "DELETE" && path.startsWith("/api/nodes/")) return await deleteNode(req, res, ws, path, policy);
+  if (method === "GET" && path === "/api/history") return await getHistory(req, res, ws);
+  if (method === "POST" && path === "/api/restore") return await postRestore(req, res, ws, policy);
+
+  // Phase 2 — the review flow (only when a Forge is configured).
+  if (method === "POST" && path === "/api/proposals") return await postProposal(res, ctx, ws);
+  if (method === "GET" && path === "/api/proposals") return await getProposals(res, ctx);
+  if (method === "POST" && path.startsWith("/api/proposals/")) return await postMergeProposal(res, ctx, ws, path, policy);
+  if (method === "POST" && path === "/api/sync") return await postSync(res, ctx, ws);
+
+  sendJson(res, 404, { error: "not found" });
+}
+
+// ---- review flow (Phase 2) ----------------------------------------------------------------------
+
+/** The configured review flow, or a 400 telling the caller it isn't enabled on this deployment. */
+function requireReview(ctx: Ctx): ReviewConfig {
+  if (!ctx.review) throw new BadRequest("review flow not enabled on this server");
+  return ctx.review;
+}
+
+/** Push the caller's branch and open (or return) its PR. Upstream failures surface as 502, not 500. */
+async function postProposal(res: ServerResponse, ctx: Ctx, ws: Workspace): Promise<void> {
+  const review = requireReview(ctx);
+  try {
+    const proposal = await submitForReview(ws, review);
+    sendJson(res, 200, proposal);
+  } catch (err) {
+    throw new BadGateway(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function getProposals(res: ServerResponse, ctx: Ctx): Promise<void> {
+  const review = requireReview(ctx);
+  try {
+    sendJson(res, 200, { proposals: await listProposals(review) });
+  } catch (err) {
+    throw new BadGateway(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Merge a proposal (admin only) — `POST /api/proposals/<n>/merge`. */
+async function postMergeProposal(res: ServerResponse, ctx: Ctx, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
+  const review = requireReview(ctx);
+  const n = Number(refSegments(path, "/api/proposals/")[0]);
+  if (!Number.isInteger(n) || n <= 0) throw new BadRequest("bad proposal number");
+  // Admin comes from access.yaml when present (Phase 3), else the KB_ADMINS list on the review config.
+  const admin = policy !== null ? isAccessAdmin(policy, ws.actor.email) : isAdmin(review, ws);
+  if (!admin) throw new Forbidden("only an admin can merge a proposal");
+  try {
+    await mergeProposal(review, n);
+    sendJson(res, 200, { ok: true });
+  } catch (err) {
+    throw new BadGateway(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Bring the base branch into the caller's draft (`POST /api/sync`); a conflict is reported, not thrown. */
+async function postSync(res: ServerResponse, ctx: Ctx, ws: Workspace): Promise<void> {
+  const review = requireReview(ctx);
+  const result = await syncFromMain(ws, review);
+  sendJson(res, 200, result);
 }
 
 // ---- path helpers -------------------------------------------------------------------------------
@@ -171,23 +305,25 @@ function collectSubtree(kbDir: string, prefix: string[]): { path: string[]; id: 
 
 // ---- topics ------------------------------------------------------------------------------------
 
-async function postTopic(req: IncomingMessage, res: ServerResponse, ctx: Ctx, actor: Actor): Promise<void> {
-  const { kbDir, git } = ctx;
+async function postTopic(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
+  const { kbDir, git, actor } = ws;
   const body = await readBody(req);
   const topic = parseTopic(body["topic"]); // ConfigError → 422 on a malformed topic
   if (!TOPIC_ID_RE.test(topic.id)) throw new BadRequest(`unsafe topic id "${topic.id}"`);
 
   const path = topicPath(kbDir, topic.path, topic.id);
-  const old = previousTopicPath(kbDir, body["previous"], topic); // a rename/move source, or null
+  const prev = previousTopicRef(kbDir, body["previous"], topic); // a rename/move source, or null
+  guardScope(policy, actor, topic.path, prev ? "move" : "save");
+  if (prev) guardScope(policy, actor, prev.path, "move"); // moving OUT of a node needs scope there too
 
   await git.commit({
     actor,
-    message: `kb: ${old ? "rename" : "save"} topic ${topic.path.join("/")}/${topic.id}`,
+    message: `kb: ${prev ? "rename" : "save"} topic ${topic.path.join("/")}/${topic.id}`,
     // Write the new file first, then delete the old one, so a failure never orphans (unchanged order).
     mutate: () => {
       mkdirSync(dirname(path), { recursive: true });
       git.atomicWrite(path, renderTopicFile(topic));
-      if (old && existsSync(old)) rmSync(old);
+      if (prev && existsSync(prev.file)) rmSync(prev.file);
     },
   });
 
@@ -195,11 +331,11 @@ async function postTopic(req: IncomingMessage, res: ServerResponse, ctx: Ctx, ac
 }
 
 /**
- * Resolve the on-disk source path of a rename/move from the optional `previous: {path, id}` body field,
- * or null when it's absent, malformed, or points at the same identity. Segment/id safety is re-checked
- * here so a crafted `previous` can never delete outside `topics/`.
+ * Resolve a rename/move source from the optional `previous: {path, id}` body field — its on-disk `file`
+ * (to delete) and `path` (to scope-check) — or null when absent, malformed, or the same identity.
+ * Segment/id safety is re-checked here so a crafted `previous` can never delete outside `topics/`.
  */
-function previousTopicPath(kbDir: string, previous: unknown, topic: Topic): string | null {
+function previousTopicRef(kbDir: string, previous: unknown, topic: Topic): { file: string; path: string[] } | null {
   if (previous === null || typeof previous !== "object") return null;
   const p = previous as Record<string, unknown>;
   const pPath = p["path"];
@@ -212,18 +348,19 @@ function previousTopicPath(kbDir: string, previous: unknown, topic: Topic): stri
     TOPIC_ID_RE.test(pId) &&
     ((pPath as string[]).join("/") !== topic.path.join("/") || pId !== topic.id)
   ) {
-    return topicPath(kbDir, pPath as string[], pId);
+    return { file: topicPath(kbDir, pPath as string[], pId), path: pPath as string[] };
   }
   return null;
 }
 
-async function deleteTopic(res: ServerResponse, ctx: Ctx, path: string, actor: Actor): Promise<void> {
-  const { kbDir, git } = ctx;
+async function deleteTopic(res: ServerResponse, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
+  const { kbDir, git, actor } = ws;
   const parts = refSegments(path, "/api/topics/"); // [seg, seg, …, id]
   const id = parts.pop() ?? "";
   if (parts.length === 0 || !parts.every((s) => SEGMENT_RE.test(s)) || !TOPIC_ID_RE.test(id)) {
     throw new BadRequest("bad topic ref");
   }
+  guardScope(policy, actor, parts, "delete");
 
   const target = topicPath(kbDir, parts, id);
   if (!existsSync(target)) throw new NotFound("no such topic");
@@ -244,8 +381,9 @@ function renderTopicFile(topic: Topic): string {
 
 // ---- meta + export ------------------------------------------------------------------------------
 
-async function putMeta(req: IncomingMessage, res: ServerResponse, ctx: Ctx, actor: Actor): Promise<void> {
-  const { kbDir, git } = ctx;
+async function putMeta(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
+  const { kbDir, git, actor } = ws;
+  guardAdmin(policy, actor, "edit the manifest identity"); // meta is a KB-wide setting
   const body = await readBody(req);
   const id = body["id"];
   const version = body["version"];
@@ -282,10 +420,11 @@ function renderMeta(meta: Record<string, unknown>): string {
 // ---- nodes (taxonomy path folders) --------------------------------------------------------------
 
 /** Create a node: make its (empty) folder subtree so it shows up before it has topics. */
-async function postNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, actor: Actor): Promise<void> {
-  const { kbDir, git } = ctx;
+async function postNode(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
+  const { kbDir, git, actor } = ws;
   const body = await readBody(req);
   const path = safePath(body["path"], "node path");
+  guardScope(policy, actor, path, "create a node at");
   // git doesn't track empty dirs, so this commit is typically a no-op — the folder still exists on disk
   // for listNodes, and it becomes real history the moment the node holds a topic.
   await git.commit({
@@ -297,13 +436,16 @@ async function postNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, act
 }
 
 /** Rename/move a node: move its subtree, prefix-rewriting each contained topic's `path`. */
-async function putNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string, actor: Actor): Promise<void> {
-  const { kbDir, git } = ctx;
+async function putNode(req: IncomingMessage, res: ServerResponse, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
+  const { kbDir, git, actor } = ws;
   const from = refSegments(path, "/api/nodes/");
   if (from.length === 0 || !from.every((s) => SEGMENT_RE.test(s))) throw new BadRequest("bad node ref");
   const body = await readBody(req);
   const to = safePath(body["to"], "target path");
   if (from.join("/") === to.join("/")) return sendJson(res, 200, { ok: true, moved: 0 });
+  // A move must be within scope on BOTH sides, or it could smuggle a subtree across an ownership boundary.
+  guardScope(policy, actor, from, "move");
+  guardScope(policy, actor, to, "move into");
 
   const fromDir = join(kbDir, "topics", ...from);
   const toDir = join(kbDir, "topics", ...to);
@@ -340,17 +482,24 @@ async function putNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path
 }
 
 /** Delete a node: refuses a non-empty subtree unless `?cascade=1`, which also removes its topic files. */
-async function deleteNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string, actor: Actor): Promise<void> {
-  const { kbDir, git } = ctx;
+async function deleteNode(req: IncomingMessage, res: ServerResponse, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
+  const { kbDir, git, actor } = ws;
   const node = refSegments(path, "/api/nodes/");
   if (node.length === 0 || !node.every((s) => SEGMENT_RE.test(s))) throw new BadRequest("bad node ref");
-  const cascade = new URL(req.url ?? "", "http://localhost").searchParams.get("cascade") === "1";
+  guardScope(policy, actor, node, "delete");
+  const url = new URL(req.url ?? "", "http://localhost");
+  const cascade = url.searchParams.get("cascade") === "1";
   const dir = join(kbDir, "topics", ...node);
   const count = countSubtreeTopics(dir);
   if (count && !cascade) {
     throw new BadRequest(
       `node "${node.join("/")}" has ${String(count)} topic(s) — move or delete them first, or pass ?cascade=1.`,
     );
+  }
+  // A cascade wipes a whole subtree — require the caller to echo the node path (type-to-confirm), so a
+  // stray click can't nuke a populated node. (Every removed file is still restorable from history.)
+  if (count && cascade && url.searchParams.get("confirm") !== node.join("/")) {
+    throw new BadRequest(`cascade delete of "${node.join("/")}" needs confirm=${node.join("/")}`);
   }
   await git.commit({
     actor,
@@ -362,8 +511,8 @@ async function deleteNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, p
   sendJson(res, 200, { ok: true, deleted: count });
 }
 
-function postExport(res: ServerResponse, ctx: Ctx): void {
-  const { kbDir, git } = ctx;
+function postExport(res: ServerResponse, ws: Workspace): void {
+  const { kbDir, git } = ws;
   const manifest = readManifestDir(kbDir); // ConfigError → 422 if the folder is invalid
   const path = join(kbDir, "manifest.yaml");
   // A derived, gitignored artifact — write it atomically but don't commit (Phase 0 gitignores it).
@@ -377,8 +526,8 @@ function postExport(res: ServerResponse, ctx: Ctx): void {
  * `GET /api/history` → recent KB commits + deleted topics (the History/Trash panel). `?path=<seg…/id>`
  * narrows to one topic's commit log (no deletions). Empty arrays when the KB dir isn't a git repo.
  */
-async function getHistory(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
-  const { kbDir, git } = ctx;
+async function getHistory(req: IncomingMessage, res: ServerResponse, ws: Workspace): Promise<void> {
+  const { kbDir, git } = ws;
   const url = new URL(req.url ?? "", "http://localhost");
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
   const pathParam = url.searchParams.get("path");
@@ -399,8 +548,8 @@ async function getHistory(req: IncomingMessage, res: ServerResponse, ctx: Ctx): 
 }
 
 /** `POST /api/restore { sha, path, id }` → bring a topic file back from a prior commit, as a new commit. */
-async function postRestore(req: IncomingMessage, res: ServerResponse, ctx: Ctx, actor: Actor): Promise<void> {
-  const { kbDir, git } = ctx;
+async function postRestore(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
+  const { kbDir, git, actor } = ws;
   const body = await readBody(req);
   const sha = body["sha"];
   // A git revision the History/Trash view handed us: a hex sha, optionally with a `~N`/`^` suffix.
@@ -408,6 +557,7 @@ async function postRestore(req: IncomingMessage, res: ServerResponse, ctx: Ctx, 
   const path = safePath(body["path"], "restore path");
   const id = body["id"];
   if (typeof id !== "string" || !TOPIC_ID_RE.test(id)) throw new BadRequest("bad restore id");
+  guardScope(policy, actor, path, "restore");
 
   const absPath = topicPath(kbDir, path, id);
   try {
@@ -532,19 +682,59 @@ function sendError(res: ServerResponse, err: unknown): void {
   if (err instanceof NotFound) return sendJson(res, 404, { error: err.message });
   if (err instanceof Conflict) return sendJson(res, 409, { error: err.message });
   if (err instanceof ConfigError) return sendJson(res, 422, { error: err.message });
+  if (err instanceof BadGateway) return sendJson(res, 502, { error: err.message });
   process.stderr.write(`kb-studio: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
   sendJson(res, 500, { error: "internal error" });
 }
 
 // ---- entrypoint (the only place that listens) ---------------------------------------------------
 
+/** Build the review flow from env: needs a GitHub token + `owner/repo`. Absent → no review flow. */
+function reviewFromEnv(): ReviewConfig | undefined {
+  const token = process.env["KB_GITHUB_TOKEN"];
+  const repo = process.env["KB_GITHUB_REPO"]; // "owner/repo"
+  const [owner, name] = (repo ?? "").split("/");
+  if (!token || !owner || !name) return undefined;
+  const admins = (process.env["KB_ADMINS"] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return {
+    forge: createGitHubForge({ token, owner, repo: name }),
+    remote: process.env["KB_REVIEW_REMOTE"] ?? "origin",
+    baseBranch: process.env["KB_REVIEW_BASE"] ?? "main",
+    admins,
+  };
+}
+
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const kbDir = process.env["KB_DIR"] ?? join(process.cwd(), "kb");
   const coverageDir = process.env["KB_COVERAGE_DIR"] ?? join(process.cwd(), "kb-coverage");
   const port = Number(process.env["KB_STUDIO_PORT"] ?? "4319");
-  createStudioServer({ kbDir, coverageDir }).listen(port, "127.0.0.1", () => {
+
+  // Multi-user (branch-per-user) mode: opt in with KB_MULTI_USER=1. Needs the repo root + a worktrees dir
+  // OUTSIDE it, and MUST sit behind the SSO proxy — so it binds all interfaces (the proxy is the only gate,
+  // and the trusted identity header is honored). Single mode stays loopback-only, exactly as before.
+  const multiUser =
+    process.env["KB_MULTI_USER"] === "1"
+      ? {
+          repoDir: process.env["KB_REPO_DIR"] ?? process.cwd(),
+          worktreesDir: process.env["KB_WORKTREES_DIR"] ?? join(process.cwd(), ".kb-worktrees"),
+        }
+      : undefined;
+  const review = multiUser ? reviewFromEnv() : undefined; // review only makes sense per-user branch
+  const host = multiUser ? "0.0.0.0" : "127.0.0.1";
+
+  createStudioServer({
+    kbDir,
+    coverageDir,
+    ...(multiUser ? { multiUser } : {}),
+    ...(review ? { review } : {}),
+  }).listen(port, host, () => {
     process.stdout.write(
-      `\n  KB Studio → http://127.0.0.1:${String(port)}\n` + `  authoring ${kbDir}\n  viewing   ${coverageDir}\n\n`,
+      `\n  KB Studio → http://${host}:${String(port)}\n` +
+        `  authoring ${kbDir}${multiUser ? `  (multi-user: worktrees in ${multiUser.worktreesDir})` : ""}` +
+        `${review ? "  (review: PRs enabled)" : ""}\n  viewing   ${coverageDir}\n\n`,
     );
   });
 }

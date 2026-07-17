@@ -121,3 +121,24 @@ export interface HistoryData {
   commits: HistoryEntry[];
   deletions: DeletedEntry[];
 }
+
+/** `GET /api/whoami` — the signed-in user, their branch, and whether the review flow is available. */
+export interface Identity {
+  actor: { name: string; email: string };
+  /** The user's branch in multi-user mode (`user/<login>`); null in single-workspace mode. */
+  branch: string | null;
+  role: string;
+  scopes: string[][];
+  review: boolean;
+}
+
+/** A pull request in the review queue (`GET /api/proposals`). */
+export interface Proposal {
+  number: number;
+  title: string;
+  url: string;
+  branch: string;
+  author: string;
+  state: "open" | "closed" | "merged";
+  createdAt: string;
+}

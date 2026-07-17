@@ -13,9 +13,11 @@ import type {
   CoverageReportWithTree,
   CoverageSummary,
   HistoryData,
+  Identity,
   Kind,
   Manifest,
   NodeInfo,
+  Proposal,
   Topic,
 } from "./types";
 
@@ -77,6 +79,11 @@ export interface State {
   historyOpen: boolean;
   history: HistoryData | null;
 
+  // Identity (multi-user) + the review queue.
+  identity: Identity | null;
+  proposalsOpen: boolean;
+  proposals: Proposal[] | null;
+
   nextId: number;
 }
 
@@ -100,6 +107,9 @@ export function initialState(): State {
     theme: null,
     historyOpen: false,
     history: null,
+    identity: null,
+    proposalsOpen: false,
+    proposals: null,
     nextId: 1,
   };
 }
@@ -136,7 +146,11 @@ export type Action =
   | { type: "setTheme"; theme: "light" | "dark" | null }
   // history / trash
   | { type: "setHistoryOpen"; open: boolean }
-  | { type: "historyLoaded"; history: HistoryData };
+  | { type: "historyLoaded"; history: HistoryData }
+  // identity + review
+  | { type: "identityLoaded"; identity: Identity }
+  | { type: "setProposalsOpen"; open: boolean }
+  | { type: "proposalsLoaded"; proposals: Proposal[] };
 
 function editorFor(eid: string, topic: Topic): EditorState {
   return {
@@ -324,6 +338,15 @@ export function reducer(state: State, action: Action): State {
 
     case "historyLoaded":
       return { ...state, history: action.history };
+
+    case "identityLoaded":
+      return { ...state, identity: action.identity };
+
+    case "setProposalsOpen":
+      return { ...state, proposalsOpen: action.open, proposals: action.open ? null : state.proposals };
+
+    case "proposalsLoaded":
+      return { ...state, proposals: action.proposals };
   }
 }
 

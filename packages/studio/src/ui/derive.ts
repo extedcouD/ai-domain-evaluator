@@ -45,6 +45,15 @@ export function pathStartsWith(path: string[], prefix: string[]): boolean {
 }
 
 /**
+ * Is `path` writable given the actor's scopes (each a path-prefix)? Mirrors the server's `canWrite`, so
+ * the UI can grey out actions the server would 403. `[[]]` (root) — sent in open mode or for an admin —
+ * matches everything; `[]` (no scopes) matches nothing (a viewer).
+ */
+export function inScope(path: string[], scopes: string[][]): boolean {
+  return scopes.some((prefix) => pathStartsWith(path, prefix));
+}
+
+/**
  * Parse a repo-relative topic file path (`…/topics/<seg…>/<id>.yaml`) into `{ path, id }`, or null when
  * it isn't a topic file. Turns a Trash entry's `file` back into the coordinates `POST /api/restore` wants.
  */

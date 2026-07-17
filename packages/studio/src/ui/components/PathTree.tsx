@@ -15,6 +15,7 @@ import {
   buildNodeTree,
   emptyHealth,
   healthOf,
+  inScope,
   pathKey,
   pathStartsWith,
   slug,
@@ -275,6 +276,8 @@ export function PathTree(props: {
   onCreateNode: (path: string[]) => void;
   onRenameNode: (from: string[], to: string[]) => void;
   onDeleteNode: (path: string[], hasTopics: boolean) => void;
+  /** The user's write scopes; out-of-scope nodes hide Rename/Delete (the server enforces too). */
+  scopes: string[][];
 }): React.JSX.Element {
   const [editing, setEditing] = useState<Editing>(null);
   const [menu, setMenu] = useState<Menu>(null);
@@ -300,12 +303,13 @@ export function PathTree(props: {
   const rootHealth = healthUnder(ctx, []);
   const rootActive = menu !== null && menu.isRoot;
 
+  // Rename/Delete are shown only where the user may write (the server 403s anyway; this avoids the toast).
+  const canEditMenu = menu !== null && !menu.isRoot && inScope(menu.path, props.scopes);
   const menuItems: ContextMenuItem[] = menu
     ? [
         { label: "＋  New sub-node", onClick: () => setEditing({ mode: "create", parent: menu.path }) },
-        ...(menu.isRoot
-          ? []
-          : [
+        ...(canEditMenu
+          ? [
               { label: "Rename…", onClick: () => setEditing({ mode: "rename", path: menu.path }) },
               {
                 label: "Delete node",
@@ -315,7 +319,8 @@ export function PathTree(props: {
                   ctx.onDeleteNode(menu.path, under.length > 0);
                 },
               },
-            ]),
+            ]
+          : []),
       ]
     : [];
 

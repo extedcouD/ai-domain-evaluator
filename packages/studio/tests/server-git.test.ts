@@ -129,7 +129,7 @@ describe("KB Studio git safety net", () => {
       seedTopic(kb, ["ondc", "protocol"], "a");
       seedTopic(kb, ["ondc", "protocol"], "b");
     });
-    const del = await req(s.base, "DELETE", "/api/nodes/ondc/protocol?cascade=1");
+    const del = await req(s.base, "DELETE", "/api/nodes/ondc/protocol?cascade=1&confirm=ondc/protocol");
     expect(del.status).toBe(200);
     expect(existsSync(join(s.kbDir, "topics", "ondc", "protocol"))).toBe(false);
 

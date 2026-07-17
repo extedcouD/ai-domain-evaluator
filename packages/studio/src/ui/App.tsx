@@ -20,15 +20,18 @@ import type {
   CoverageSummary,
   DeletedEntry,
   HistoryData,
+  Identity,
   Kind,
   Manifest,
   NodeInfo,
+  Proposal,
   Topic,
 } from "./types";
 import { CoverageView } from "./components/CoverageView";
 import { Header } from "./components/Header";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { PathTree } from "./components/PathTree";
+import { ProposalsPanel } from "./components/ProposalsPanel";
 import { Toast } from "./components/Toast";
 import { TopicList } from "./components/TopicList";
 
@@ -99,11 +102,34 @@ export function App(): React.JSX.Element {
     void loadHistory();
   }, [loadHistory]);
 
+  const loadWhoami = useCallback(async () => {
+    try {
+      dispatch({ type: "identityLoaded", identity: await get<Identity>("/api/whoami") });
+    } catch {
+      /* whoami is best-effort chrome — leave identity null (single-user shows no chip) */
+    }
+  }, []);
+
+  const loadProposals = useCallback(async () => {
+    try {
+      const r = await get<{ proposals: Proposal[] }>("/api/proposals");
+      dispatch({ type: "proposalsLoaded", proposals: r.proposals });
+    } catch {
+      dispatch({ type: "proposalsLoaded", proposals: [] });
+    }
+  }, []);
+
+  const openProposals = useCallback(() => {
+    dispatch({ type: "setProposalsOpen", open: true });
+    void loadProposals();
+  }, [loadProposals]);
+
   // ---- boot --------------------------------------------------------------------------------------
   useEffect(() => {
     void loadManifest();
     void loadNodes();
     void loadRuns();
+    void loadWhoami();
     const fromHash = hashView();
     if (fromHash) dispatch({ type: "setView", view: fromHash });
     try {
@@ -112,7 +138,7 @@ export function App(): React.JSX.Element {
     } catch {
       /* ignore */
     }
-  }, [loadManifest, loadNodes, loadRuns]);
+  }, [loadManifest, loadNodes, loadRuns, loadWhoami]);
 
   // Ensure the reports we need (newest for the overlay, plus A/B) are loaded.
   useEffect(() => {
@@ -287,14 +313,23 @@ export function App(): React.JSX.Element {
   };
 
   const deleteNode = async (path: string[], hasTopics: boolean): Promise<void> => {
-    const q = hasTopics
-      ? `Delete node "${path.join("/")}" and its topics? This removes the topic files.`
-      : `Delete empty node "${path.join("/")}"?`;
-    if (!window.confirm(q)) return;
+    const label = path.join("/");
+    let suffix = "";
+    if (hasTopics) {
+      // Type-to-confirm: nuking a populated subtree needs the exact node path (echoed to the server too).
+      const typed = window.prompt(`This deletes node "${label}" and ALL its topics. Type the node path to confirm:`, "");
+      if (typed !== label) {
+        if (typed !== null) toast("name didn't match — nothing deleted", "error");
+        return;
+      }
+      suffix = `?cascade=1&confirm=${encodeURIComponent(label)}`;
+    } else if (!window.confirm(`Delete empty node "${label}"?`)) {
+      return;
+    }
     try {
-      await del(`/api/nodes/${encodeRef(...path)}${hasTopics ? "?cascade=1" : ""}`);
-      toast(`deleted ${path.join("/")}`);
-      if (state.selectedPath.join("/").startsWith(path.join("/"))) dispatch({ type: "selectPath", path: [] });
+      await del(`/api/nodes/${encodeRef(...path)}${suffix}`);
+      toast(`deleted ${label}`);
+      if (state.selectedPath.join("/").startsWith(label)) dispatch({ type: "selectPath", path: [] });
       await Promise.all([loadNodes(), loadManifest()]);
     } catch (err) {
       toast(errMsg(err), "error");
@@ -334,6 +369,37 @@ export function App(): React.JSX.Element {
     }
   };
 
+  // ---- review handlers ---------------------------------------------------------------------------
+  const submitForReview = async (): Promise<void> => {
+    try {
+      const p = await post<Proposal>("/api/proposals", {});
+      toast(`opened PR #${String(p.number)} for review`);
+      await loadProposals();
+    } catch (err) {
+      toast(errMsg(err), "error");
+    }
+  };
+
+  const syncWithMain = async (): Promise<void> => {
+    try {
+      const r = await post<{ merged: boolean; conflicted: boolean }>("/api/sync", {});
+      toast(r.conflicted ? "sync hit conflicts — resolve on your branch" : "synced with main", r.conflicted ? "error" : "info");
+      if (!r.conflicted) await Promise.all([loadManifest(), loadNodes()]);
+    } catch (err) {
+      toast(errMsg(err), "error");
+    }
+  };
+
+  const mergeProposal = async (n: number): Promise<void> => {
+    try {
+      await post(`/api/proposals/${String(n)}/merge`, {});
+      toast(`merged #${String(n)}`);
+      await loadProposals();
+    } catch (err) {
+      toast(errMsg(err), "error");
+    }
+  };
+
   // ---- render ------------------------------------------------------------------------------------
   return (
     <div className="app">
@@ -346,6 +412,8 @@ export function App(): React.JSX.Element {
         onSaveMeta={(id, version, subject, lv) => void saveMeta(id, version, subject, lv)}
         onExport={() => void exportManifest()}
         onOpenHistory={openHistory}
+        identity={state.identity}
+        onOpenProposals={openProposals}
       />
 
       <div className={`body${state.view === "coverage" ? " cov" : ""}`}>
@@ -362,6 +430,7 @@ export function App(): React.JSX.Element {
               onCreateNode={(p) => void createNode(p)}
               onRenameNode={(f, t) => void renameNode(f, t)}
               onDeleteNode={(p, h) => void deleteNode(p, h)}
+              scopes={state.identity?.scopes ?? [[]]}
             />
             <main className="workspace">
               <TopicList
@@ -379,6 +448,7 @@ export function App(): React.JSX.Element {
                 editors={Object.values(state.editors)}
                 onCloseEditor={onCloseEditor}
                 onDeleteEditor={(eid) => void deleteTopic(eid)}
+                scopes={state.identity?.scopes ?? [[]]}
               />
             </main>
           </>
@@ -394,6 +464,17 @@ export function App(): React.JSX.Element {
           data={state.history}
           onRestore={(entry) => void restoreTopic(entry)}
           onClose={() => dispatch({ type: "setHistoryOpen", open: false })}
+        />
+      )}
+
+      {state.proposalsOpen && (
+        <ProposalsPanel
+          identity={state.identity}
+          proposals={state.proposals}
+          onSubmit={() => void submitForReview()}
+          onSync={() => void syncWithMain()}
+          onMerge={(n) => void mergeProposal(n)}
+          onClose={() => dispatch({ type: "setProposalsOpen", open: false })}
         />
       )}
 

@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { suggestLevelLabels, topicRefFromFile } from "../src/ui/derive";
+import { inScope, suggestLevelLabels, topicRefFromFile } from "../src/ui/derive";
+
+describe("inScope", () => {
+  it("root scope [[]] matches everything (admin / open mode)", () => {
+    expect(inScope(["a", "b"], [[]])).toBe(true);
+  });
+  it("empty scopes [] matches nothing (viewer)", () => {
+    expect(inScope(["a"], [])).toBe(false);
+  });
+  it("matches a path at or under a prefix, not a sibling", () => {
+    expect(inScope(["protocol", "foundation", "x"], [["protocol", "foundation"]])).toBe(true);
+    expect(inScope(["protocol", "domains"], [["protocol", "foundation"]])).toBe(false);
+  });
+});
 
 describe("topicRefFromFile", () => {
   it("strips the (possibly prefixed) path up to topics/ into { path, id }", () => {

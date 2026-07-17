@@ -8,7 +8,7 @@ import { useEffect, useState, type Dispatch } from "react";
 
 import { suggestLevelLabels } from "../derive";
 import type { Action, View } from "../state";
-import type { Manifest, NodeInfo } from "../types";
+import type { Identity, Manifest, NodeInfo } from "../types";
 
 function IdentityPanel({
   manifest,
@@ -118,8 +118,10 @@ export function Header(props: {
   onSaveMeta: (id: string, version: string, subject: string, levels: string[]) => void;
   onExport: () => void;
   onOpenHistory: () => void;
+  identity: Identity | null;
+  onOpenProposals: () => void;
 }): React.JSX.Element {
-  const { view, manifest, dispatch } = props;
+  const { view, manifest, dispatch, identity } = props;
   const topicCount = manifest?.topics.length ?? 0;
   const dateRight = view === "coverage" ? "Coverage run" : `Authoring · ${String(topicCount)} topics`;
   return (
@@ -149,6 +151,16 @@ export function Header(props: {
             ))}
           </div>
           <IdentityPanel manifest={manifest} nodes={props.nodes} onSaveMeta={props.onSaveMeta} onExport={props.onExport} />
+          {identity?.review && (
+            <button
+              className="btn btn-secondary sm"
+              type="button"
+              title="Review — submit your branch for review, sync with main, and merge proposals"
+              onClick={props.onOpenProposals}
+            >
+              ⇧ Review
+            </button>
+          )}
           <button
             className="btn btn-secondary sm"
             type="button"
@@ -184,6 +196,11 @@ export function Header(props: {
         )}
         <span className="dateline-sep">·</span>
         <span className="dateline-right">{dateRight}</span>
+        {identity?.branch && (
+          <span className="identity-chip" title={`signed in as ${identity.actor.email} (${identity.role})`}>
+            {identity.actor.name} · {identity.role} · <code>{identity.branch}</code>
+          </span>
+        )}
       </div>
       <div className="topbar-divider" />
     </header>

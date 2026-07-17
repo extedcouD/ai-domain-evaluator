@@ -229,10 +229,34 @@ export class GitStore {
     return { sha };
   }
 
-  /** Best-effort push for off-site backup — never throws to a caller; failures are the caller's to log. */
+  /** Push a branch to a remote (off-site backup, or publishing a user branch for review). */
   async push(remote: string, branch: string): Promise<void> {
     await this.init();
     if (!this.git) return;
     await this.git.push(remote, branch);
+  }
+
+  /**
+   * Merge `ref` into the current branch (e.g. `main` → a user branch, to keep a draft current). Runs in
+   * the mutex like a commit. On conflict it ABORTS the merge — leaving the worktree clean — and reports
+   * `conflicted`, rather than stranding the tree half-merged for the next request to trip over.
+   */
+  async mergeRef(ref: string): Promise<{ merged: boolean; conflicted: boolean }> {
+    await this.init();
+    const git = this.git;
+    if (!git) return { merged: false, conflicted: false };
+    return this.mutex.runExclusive(async () => {
+      try {
+        await git.raw(["merge", "--no-edit", ref]);
+        return { merged: true, conflicted: false };
+      } catch {
+        try {
+          await git.raw(["merge", "--abort"]);
+        } catch {
+          /* nothing to abort (e.g. ref didn't exist) */
+        }
+        return { merged: false, conflicted: true };
+      }
+    });
   }
 }

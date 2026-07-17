@@ -20,6 +20,8 @@ export function TopicEditorFields(props: {
   editor: EditorState;
   index: StatusIndex;
   hasCoverage: boolean;
+  /** False when this topic sits outside the user's write scope — Delete is hidden (server enforces too). */
+  canDelete: boolean;
   dispatch: Dispatch<Action>;
   onClose: () => void;
   onDelete: () => void;
@@ -194,7 +196,7 @@ export function TopicEditorFields(props: {
         <button className="btn subtle sm" type="button" title="Duplicate as a new topic" onClick={() => dispatch({ type: "editorDuplicate", eid })}>
           Duplicate
         </button>
-        {editing ? (
+        {editing && props.canDelete ? (
           <button className="btn danger sm" type="button" onClick={props.onDelete}>
             Delete
           </button>
