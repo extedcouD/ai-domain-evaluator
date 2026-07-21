@@ -1,0 +1,17 @@
+# kind: canary — a FABRICATED topic with no truthful answer (there is no Beckn `reserve` / `on_reserve`
+# action; holding intent is expressed through the real init → confirm flow). A grounded source ABSTAINS;
+# a confabulator invents semantics for it — which discredits its confident answers to the REAL topics
+# too, since the probe INVERTS the expectation for canaries. Keep a canary PLAUSIBLE and adjacent to a
+# real topic (here, next to the `beckn-transaction-actions` enumeration) so a bluffer is genuinely
+# tempted to bite. Style: fabricated-ACTION. Two phrasings give the probe two chances to catch the bite.
+id: fake-beckn-reserve-action
+path:
+  - ondc
+  - protocol
+  - foundation
+  - beckn
+title: fake-beckn-reserve-action
+kind: canary
+questions:
+  - What does the reserve action do in the Beckn protocol?
+  - How do I use the Beckn reserve and on_reserve calls to hold an item before ordering?

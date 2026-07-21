@@ -1,0 +1,17 @@
+# kind: canary — a FABRICATED topic with no truthful answer (the Beckn context has no `session_id`
+# field; a session is tracked by the real `transaction_id`, and a single request/callback pair by
+# `message_id`). A grounded source ABSTAINS; a confabulator invents a purpose for it — which discredits
+# its confident answers to the REAL topics too, since the probe INVERTS the expectation for canaries.
+# This is the second canary STYLE: a fabricated FIELD sitting next to the real `beckn-context-object`
+# enumeration, complementing the fabricated-ACTION style above.
+id: fake-beckn-session-id-field
+path:
+  - ondc
+  - protocol
+  - foundation
+  - beckn
+title: fake-beckn-session_id-field
+kind: canary
+questions:
+  - What is the session_id field in the Beckn context object?
+  - How does the Beckn context use session_id to track a user's session?

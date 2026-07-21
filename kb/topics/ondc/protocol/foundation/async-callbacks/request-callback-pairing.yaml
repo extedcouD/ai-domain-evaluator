@@ -1,0 +1,20 @@
+# kind: real — a genuine topic the source SHOULD answer. Gold-standard reals carry 2–3 EQUIVALENT
+# phrasings: the coverage probe asks up to `paraphrases` (default 3) and cross-checks the answers, so a
+# topic answered one way and refused or contradicted under another wording surfaces as `refused` /
+# `inconsistent`. A single phrasing can never expose that. Vary the wording, not the meaning.
+#
+# This pairing rule is the neighbour of the `fake-on-search-complete` canary: knowing that every request
+# action has exactly ONE matching `on_` callback (search→on_search, select→on_select, …) — and no extra
+# terminal signal — is what makes a confabulated `on_search_complete` callback conspicuous.
+id: request-callback-pairing
+path:
+  - ondc
+  - protocol
+  - foundation
+  - async-callbacks
+title: Request/callback action pairs
+kind: real
+questions:
+  - How do Beckn request actions pair with their callback actions?
+  - What is the relationship between an action like select and its on_ callback?
+  - How does each ONDC request map to a callback response?

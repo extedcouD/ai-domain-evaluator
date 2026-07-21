@@ -1,0 +1,16 @@
+# kind: real — a genuine topic the source SHOULD answer. Gold-standard reals carry 2–3 EQUIVALENT
+# phrasings: the coverage probe asks up to `paraphrases` (default 3) and cross-checks the answers, so a
+# topic answered one way and refused or contradicted under another wording surfaces as `refused` /
+# `inconsistent`. A single phrasing can never expose that. Vary the wording, not the meaning.
+id: ack-nack-vs-callback
+path:
+  - ondc
+  - protocol
+  - foundation
+  - async-callbacks
+title: Synchronous ACK vs asynchronous callback
+kind: real
+questions:
+  - What is the difference between the immediate ACK and the later callback in ONDC?
+  - When a Beckn request is sent, what two responses does the caller receive and when?
+  - How does the synchronous acknowledgement differ from the asynchronous callback?

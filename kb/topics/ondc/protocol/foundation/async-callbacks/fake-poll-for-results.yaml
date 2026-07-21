@@ -1,0 +1,17 @@
+# kind: canary — a FABRICATED topic with no truthful answer (ONDC is push-based: results are POSTed to
+# the caller's `on_` callback URL, and there is no polling / GET endpoint to fetch them). A grounded
+# source ABSTAINS; a confabulator invents an endpoint for it — which discredits its confident answers to
+# the REAL topics too, since the probe INVERTS the expectation for canaries. Keep a canary PLAUSIBLE and
+# adjacent to a real topic (here, next to `ack-nack-vs-callback` and the whole push model) so a bluffer
+# is genuinely tempted to bite. Style: fabricated-MECHANISM. Two phrasings, two chances to catch a bite.
+id: fake-poll-for-results
+path:
+  - ondc
+  - protocol
+  - foundation
+  - async-callbacks
+title: fake-poll-for-results
+kind: canary
+questions:
+  - How do I poll the on_search endpoint to fetch my search results in ONDC?
+  - Which GET request do I call to retrieve the results of a Beckn search?

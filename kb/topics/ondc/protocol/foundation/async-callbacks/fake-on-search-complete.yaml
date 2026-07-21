@@ -1,0 +1,18 @@
+# kind: canary — a FABRICATED topic with no truthful answer (there is no `on_search_complete` callback;
+# each request action has exactly one `on_` reply, and a BAP simply collects the multiplexed `on_search`
+# responses until the context `ttl` elapses — nothing signals "all catalogs have arrived"). A grounded
+# source ABSTAINS; a confabulator invents a purpose for it — which discredits its confident answers to
+# the REAL topics too, since the probe INVERTS the expectation for canaries. This is the second canary
+# STYLE: a fabricated CALLBACK next to the real `request-callback-pairing` topic, complementing the
+# fabricated-MECHANISM style above.
+id: fake-on-search-complete
+path:
+  - ondc
+  - protocol
+  - foundation
+  - async-callbacks
+title: fake-on_search_complete-callback
+kind: canary
+questions:
+  - What does the on_search_complete callback signal in ONDC?
+  - How does the network use on_search_complete to tell the BAP that all catalogs have arrived?

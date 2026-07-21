@@ -1,0 +1,20 @@
+# kind: real — a genuine topic the source SHOULD answer. Gold-standard reals carry 2–3 EQUIVALENT
+# phrasings: the coverage probe asks up to `paraphrases` (default 3) and cross-checks the answers, so a
+# topic answered one way and refused or contradicted under another wording surfaces as `refused` /
+# `inconsistent`. A single phrasing can never expose that. Vary the wording, not the meaning.
+#
+# This enumeration is the neighbour of the `fake-beckn-reserve-action` canary: naming the REAL action
+# set (search, select, init, confirm, status, track, cancel, update, rating, support) is what makes a
+# confabulated `reserve` action conspicuous.
+id: beckn-transaction-actions
+path:
+  - ondc
+  - protocol
+  - foundation
+  - beckn
+title: Beckn transaction actions
+kind: real
+questions:
+  - What are the transaction actions defined by the Beckn protocol?
+  - Which API actions can a Beckn transaction use?
+  - What are the standard operations in a Beckn transaction flow?
