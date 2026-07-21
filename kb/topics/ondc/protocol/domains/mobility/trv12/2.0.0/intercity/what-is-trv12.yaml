@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-trv12
+path:
+  - ondc
+  - protocol
+  - domains
+  - mobility
+  - trv12
+  - "2.0.0"
+  - intercity
+title: 'ONDC:TRV12 2.0.0 — Intercity'
+kind: real
+questions:
+  - 'What is ONDC:TRV12 version 2.0.0?'

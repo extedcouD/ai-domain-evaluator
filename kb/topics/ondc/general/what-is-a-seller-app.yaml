@@ -1,0 +1,10 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-a-seller-app
+path:
+  - ondc
+  - general
+title: 'Seller-side app (BPP)'
+kind: real
+questions:
+  - 'What is a seller-side app (BPP) in ONDC?'
+  - 'What does a Beckn Provider Platform do in ONDC?'

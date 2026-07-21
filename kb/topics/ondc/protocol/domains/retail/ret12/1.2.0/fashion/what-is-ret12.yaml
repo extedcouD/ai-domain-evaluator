@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-ret12
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret12
+  - "1.2.0"
+  - fashion
+title: 'ONDC:RET12 1.2.0 — FASHION'
+kind: real
+questions:
+  - 'What is ONDC:RET12 version 1.2.0?'

@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-ret11
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret11
+  - "1.2.5"
+  - f-b
+title: 'ONDC:RET11 1.2.5 — F&B'
+kind: real
+questions:
+  - 'What is ONDC:RET11 version 1.2.5?'

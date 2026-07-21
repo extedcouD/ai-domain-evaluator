@@ -1,5 +1,5 @@
 # Manifest identity + subject. Topics live in topics/<seg…>/<id>.yaml; bump version when the set changes.
 
 id: ondc-kb
-version: 0.1.0
+version: 0.2.0
 subject: the ONDC (Open Network for Digital Commerce) protocol specifications

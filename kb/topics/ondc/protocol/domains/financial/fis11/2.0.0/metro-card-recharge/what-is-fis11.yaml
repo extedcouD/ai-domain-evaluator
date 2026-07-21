@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-fis11
+path:
+  - ondc
+  - protocol
+  - domains
+  - financial
+  - fis11
+  - "2.0.0"
+  - metro-card-recharge
+title: 'ONDC:FIS11 2.0.0 — metro-card-recharge'
+kind: real
+questions:
+  - 'What is ONDC:FIS11 version 2.0.0?'

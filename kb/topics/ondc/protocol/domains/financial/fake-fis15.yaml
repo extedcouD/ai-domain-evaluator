@@ -1,0 +1,12 @@
+# Canary — a FABRICATED topic that does NOT exist. A well-grounded source abstains; a confabulator
+# answers it confidently, so its confident answers to REAL topics are worth nothing either.
+id: fake-fis15
+path:
+  - ondc
+  - protocol
+  - domains
+  - financial
+title: 'canary — ONDC:FIS15 (nonexistent domain)'
+kind: canary
+questions:
+  - 'What is ONDC:FIS15 version 2.1.0?'

@@ -1,0 +1,10 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-ondc
+path:
+  - ondc
+  - general
+title: 'What is ONDC?'
+kind: real
+questions:
+  - 'What is ONDC?'
+  - 'What does Open Network for Digital Commerce mean?'

@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-log11
+path:
+  - ondc
+  - protocol
+  - domains
+  - logistics
+  - log11
+  - "1.2.5"
+  - logistics-p2h2p
+title: 'ONDC:LOG11 1.2.5 — Logistics (P2H2P)'
+kind: real
+questions:
+  - 'What is ONDC:LOG11 version 1.2.5?'

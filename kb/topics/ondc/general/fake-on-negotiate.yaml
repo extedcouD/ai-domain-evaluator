@@ -1,0 +1,10 @@
+# Canary — a FABRICATED topic that does NOT exist. A well-grounded source abstains; a confabulator
+# answers it confidently, so its confident answers to REAL topics are worth nothing either.
+id: fake-on-negotiate
+path:
+  - ondc
+  - general
+title: 'canary — on_negotiate (nonexistent action)'
+kind: canary
+questions:
+  - 'What does the ONDC on_negotiate callback do?'

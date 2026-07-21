@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-retinvl
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - retinvl
+  - "1.2.5"
+  - retinvl
+title: 'ONDC:RETINVL 1.2.5 — RETINVL'
+kind: real
+questions:
+  - 'What is ONDC:RETINVL version 1.2.5?'

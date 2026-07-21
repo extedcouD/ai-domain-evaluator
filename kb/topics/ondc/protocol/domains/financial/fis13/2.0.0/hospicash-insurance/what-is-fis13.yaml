@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-fis13
+path:
+  - ondc
+  - protocol
+  - domains
+  - financial
+  - fis13
+  - "2.0.0"
+  - hospicash-insurance
+title: 'ONDC:FIS13 2.0.0 — hospicash-insurance'
+kind: real
+questions:
+  - 'What is ONDC:FIS13 version 2.0.0?'

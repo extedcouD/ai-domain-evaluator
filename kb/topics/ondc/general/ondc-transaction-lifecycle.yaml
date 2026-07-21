@@ -1,0 +1,10 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: ondc-transaction-lifecycle
+path:
+  - ondc
+  - general
+title: 'The ONDC transaction lifecycle'
+kind: real
+questions:
+  - 'What is the ONDC transaction lifecycle?'
+  - 'What are the stages of an ONDC order from search to fulfillment?'

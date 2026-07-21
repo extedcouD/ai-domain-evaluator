@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-ret14
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret14
+  - "1.2.5"
+  - electronics
+title: 'ONDC:RET14 1.2.5 — ELECTRONICS'
+kind: real
+questions:
+  - 'What is ONDC:RET14 version 1.2.5?'

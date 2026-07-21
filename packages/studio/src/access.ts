@@ -22,7 +22,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export interface AccessPolicy {
   admins: Set<string>;
@@ -88,6 +88,39 @@ function isPrefix(prefix: string[], path: string[]): boolean {
 /** Admin per the policy. Open mode (no policy) is NOT admin — admin-only ops simply aren't enforced there. */
 export function isAdmin(policy: AccessPolicy | null, email: string): boolean {
   return policy !== null && policy.admins.has(email);
+}
+
+/**
+ * The policy as plain, serializable data — the shape the Admin page reads (`GET /api/access`) and posts
+ * back (`PUT /api/access`). `users` is a list (not a Map) so it survives JSON; `null` → all-empty, which
+ * the UI shows as "open mode".
+ */
+export interface PolicyData {
+  admins: string[];
+  users: { email: string; scopes: string[][] }[];
+  defaultScopes: string[][];
+}
+
+/** Flatten a parsed policy (Sets/Maps) into `PolicyData`. Open mode (`null`) → empty lists. */
+export function policyToData(policy: AccessPolicy | null): PolicyData {
+  if (policy === null) return { admins: [], users: [], defaultScopes: [] };
+  return {
+    admins: [...policy.admins],
+    users: [...policy.scopes.entries()].map(([email, scopes]) => ({ email, scopes })),
+    defaultScopes: policy.defaultScopes,
+  };
+}
+
+const ACCESS_HEADER =
+  "# Access policy — who may write which part of the taxonomy. Managed from KB Studio's Admin page.\n" +
+  "# admins: full access (any path, edit meta, merge). users.<email>.scopes: path-prefixes they may\n" +
+  "# write within (an empty [] = the root = everything). defaults.scopes: everyone else (omit/[] = read-only).\n\n";
+
+/** Serialize `PolicyData` to the `access.yaml` text `parseAccess` reads back. */
+export function renderAccessYaml(data: PolicyData): string {
+  const users: Record<string, { scopes: string[][] }> = {};
+  for (const u of data.users) users[u.email] = { scopes: u.scopes };
+  return ACCESS_HEADER + stringifyYaml({ admins: data.admins, users, defaults: { scopes: data.defaultScopes } });
 }
 
 /** The write scopes for an email — `[[]]` (root) in open mode or for an admin. */

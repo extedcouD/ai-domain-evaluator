@@ -1,0 +1,13 @@
+# Canary — a FABRICATED topic that does NOT exist. A well-grounded source abstains; a confabulator
+# answers it confidently, so its confident answers to REAL topics are worth nothing either.
+id: fake-trv11-tram
+path:
+  - ondc
+  - protocol
+  - domains
+  - mobility
+  - trv11
+title: 'canary — ONDC:TRV11 tram (nonexistent usecase)'
+kind: canary
+questions:
+  - 'What is the tram use case in ONDC:TRV11?'

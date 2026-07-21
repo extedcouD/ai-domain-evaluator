@@ -1,0 +1,10 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-a-buyer-app
+path:
+  - ondc
+  - general
+title: 'Buyer-side app (BAP)'
+kind: real
+questions:
+  - 'What is a buyer-side app (BAP) in ONDC?'
+  - 'What does a Beckn Application Platform do in ONDC?'

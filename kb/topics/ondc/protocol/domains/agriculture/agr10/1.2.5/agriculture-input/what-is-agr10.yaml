@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-agr10
+path:
+  - ondc
+  - protocol
+  - domains
+  - agriculture
+  - agr10
+  - "1.2.5"
+  - agriculture-input
+title: 'ONDC:AGR10 1.2.5 — agriculture-input'
+kind: real
+questions:
+  - 'What is ONDC:AGR10 version 1.2.5?'

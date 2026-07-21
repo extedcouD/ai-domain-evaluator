@@ -1,0 +1,10 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-a-network-participant
+path:
+  - ondc
+  - general
+title: 'Network participants'
+kind: real
+questions:
+  - 'What is a network participant in ONDC?'
+  - 'What are the types of network participants in ONDC?'

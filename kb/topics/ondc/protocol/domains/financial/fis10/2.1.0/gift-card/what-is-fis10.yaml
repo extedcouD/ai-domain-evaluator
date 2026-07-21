@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-fis10
+path:
+  - ondc
+  - protocol
+  - domains
+  - financial
+  - fis10
+  - "2.1.0"
+  - gift-card
+title: 'ONDC:FIS10 2.1.0 — gift-card'
+kind: real
+questions:
+  - 'What is ONDC:FIS10 version 2.1.0?'

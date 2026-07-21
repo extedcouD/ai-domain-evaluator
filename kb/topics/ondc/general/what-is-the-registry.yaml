@@ -1,0 +1,10 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-the-registry
+path:
+  - ondc
+  - general
+title: 'The ONDC registry'
+kind: real
+questions:
+  - 'What is the ONDC registry?'
+  - 'What does the ONDC registry do?'

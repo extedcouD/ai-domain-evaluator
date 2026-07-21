@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-trv10
+path:
+  - ondc
+  - protocol
+  - domains
+  - mobility
+  - trv10
+  - "2.0.1"
+  - ride-hailing
+title: 'ONDC:TRV10 2.0.1 — Ride-hailing'
+kind: real
+questions:
+  - 'What is ONDC:TRV10 version 2.0.1?'

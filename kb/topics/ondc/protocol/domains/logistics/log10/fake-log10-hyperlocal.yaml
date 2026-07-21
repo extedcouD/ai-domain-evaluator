@@ -1,0 +1,13 @@
+# Canary — a FABRICATED topic that does NOT exist. A well-grounded source abstains; a confabulator
+# answers it confidently, so its confident answers to REAL topics are worth nothing either.
+id: fake-log10-hyperlocal
+path:
+  - ondc
+  - protocol
+  - domains
+  - logistics
+  - log10
+title: 'canary — ONDC:LOG10 hyperlocal (nonexistent usecase)'
+kind: canary
+questions:
+  - 'What is the hyperlocal use case in ONDC:LOG10?'

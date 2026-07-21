@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-ret13
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret13
+  - "1.2.0"
+  - bpc
+title: 'ONDC:RET13 1.2.0 — BPC'
+kind: real
+questions:
+  - 'What is ONDC:RET13 version 1.2.0?'

@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-nts10
+path:
+  - ondc
+  - protocol
+  - domains
+  - settlement
+  - nts10
+  - "2.0.0"
+  - reconciliation
+title: 'ONDC:NTS10 2.0.0 — RECONCILIATION'
+kind: real
+questions:
+  - 'What is ONDC:NTS10 version 2.0.0?'

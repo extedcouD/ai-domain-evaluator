@@ -16,6 +16,8 @@ import {
   type View,
 } from "./state";
 import type {
+  AccessPolicyView,
+  AdminOverview,
   CoverageReportWithTree,
   CoverageSummary,
   DeletedEntry,
@@ -27,6 +29,7 @@ import type {
   Proposal,
   Topic,
 } from "./types";
+import { AdminView, type AccessDraft } from "./components/AdminView";
 import { CoverageView } from "./components/CoverageView";
 import { Header } from "./components/Header";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -39,7 +42,7 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 
 function hashView(): View | null {
   const h = window.location.hash.replace(/^#/, "").split("/")[0];
-  return h === "coverage" || h === "author" ? h : null;
+  return h === "coverage" || h === "author" || h === "admin" ? h : null;
 }
 
 export function App(): React.JSX.Element {
@@ -124,6 +127,22 @@ export function App(): React.JSX.Element {
     void loadProposals();
   }, [loadProposals]);
 
+  const loadAccess = useCallback(async () => {
+    try {
+      dispatch({ type: "accessLoaded", access: await get<AccessPolicyView>("/api/access") });
+    } catch {
+      /* non-admin / not available — the Admin tab is admin-gated, so this is best-effort chrome */
+    }
+  }, []);
+
+  const loadOverview = useCallback(async () => {
+    try {
+      dispatch({ type: "overviewLoaded", overview: await get<AdminOverview>("/api/admin/overview") });
+    } catch {
+      /* best-effort */
+    }
+  }, []);
+
   // ---- boot --------------------------------------------------------------------------------------
   useEffect(() => {
     void loadManifest();
@@ -182,6 +201,19 @@ export function App(): React.JSX.Element {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  // Admin view: load its data on entry; a non-admin who lands on #admin is bounced out (the tab is
+  // already hidden for them, so this only catches a hand-typed hash).
+  useEffect(() => {
+    if (state.view !== "admin") return;
+    if (state.identity && state.identity.role !== "admin") {
+      dispatch({ type: "setView", view: "author" });
+      return;
+    }
+    void loadAccess();
+    void loadOverview();
+    void loadProposals();
+  }, [state.view, state.identity, loadAccess, loadOverview, loadProposals]);
 
   // ---- derived -----------------------------------------------------------------------------------
   const newestFile = state.runs[0]?.file;
@@ -426,6 +458,29 @@ export function App(): React.JSX.Element {
     }
   };
 
+  // ---- admin handlers ----------------------------------------------------------------------------
+  const saveAccess = async (draft: AccessDraft): Promise<void> => {
+    try {
+      await put("/api/access", draft);
+      toast("saved access policy");
+      // Reload the policy + overview, and whoami (the caller's own role may have changed).
+      await Promise.all([loadAccess(), loadOverview(), loadWhoami()]);
+    } catch (err) {
+      toast(errMsg(err), "error");
+    }
+  };
+
+  const disableAccess = async (): Promise<void> => {
+    if (!window.confirm("Disable access control? Everyone who can sign in will be able to edit everything (open mode).")) return;
+    try {
+      await del("/api/access");
+      toast("access control disabled (open mode)");
+      await Promise.all([loadAccess(), loadOverview(), loadWhoami()]);
+    } catch (err) {
+      toast(errMsg(err), "error");
+    }
+  };
+
   // ---- render ------------------------------------------------------------------------------------
   return (
     <div className="app">
@@ -442,7 +497,7 @@ export function App(): React.JSX.Element {
         onOpenProposals={openProposals}
       />
 
-      <div className={`body${state.view === "coverage" ? " cov" : ""}`}>
+      <div className={`body${state.view !== "author" ? " cov" : ""}`}>
         {state.view === "author" ? (
           <>
             <PathTree
@@ -480,9 +535,24 @@ export function App(): React.JSX.Element {
               />
             </main>
           </>
-        ) : (
+        ) : state.view === "coverage" ? (
           <main className="workspace">
             <CoverageView runs={state.runs} runA={state.runA} runB={state.runB} reports={state.reports} levels={state.manifest?.levels ?? []} dispatch={dispatch} />
+          </main>
+        ) : (
+          <main className="workspace">
+            <AdminView
+              identity={state.identity}
+              access={state.access}
+              overview={state.overview}
+              proposals={state.proposals}
+              nodes={state.nodes}
+              manifest={state.manifest}
+              onSaveAccess={(draft) => void saveAccess(draft)}
+              onDisableAccess={() => void disableAccess()}
+              onSaveMeta={(id, version, subject, lv) => void saveMeta(id, version, subject, lv)}
+              onExport={() => void exportManifest()}
+            />
           </main>
         )}
       </div>

@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-trv13
+path:
+  - ondc
+  - protocol
+  - domains
+  - mobility
+  - trv13
+  - "2.0.0"
+  - hotel-booking
+title: 'ONDC:TRV13 2.0.0 — Hotel-Booking'
+kind: real
+questions:
+  - 'What is ONDC:TRV13 version 2.0.0?'

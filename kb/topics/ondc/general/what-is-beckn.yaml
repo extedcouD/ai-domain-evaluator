@@ -1,0 +1,10 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-beckn
+path:
+  - ondc
+  - general
+title: 'The Beckn protocol'
+kind: real
+questions:
+  - 'What is the Beckn protocol?'
+  - 'How does the Beckn protocol relate to ONDC?'

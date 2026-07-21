@@ -1797,3 +1797,48 @@ select.run {
   display: flex;
   gap: var(--space-2);
 }
+
+/* --- admin view ------------------------------------------------------------- */
+.admin {
+  padding: 24px 30px 80px;
+  max-width: 900px;
+  width: 100%;
+}
+.admin-section {
+  background: var(--color-bg);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  padding: 20px 22px;
+  margin-bottom: 22px;
+}
+.admin-section > h3 {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.admin h6 {
+  margin: 0 0 6px;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.admin-section .id-line input.f {
+  max-width: 360px;
+}
+.admin-user {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--color-neutral-100);
+}
+.admin-status th {
+  width: 190px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  color: var(--color-neutral-600);
+  position: static;
+  background: transparent;
+}

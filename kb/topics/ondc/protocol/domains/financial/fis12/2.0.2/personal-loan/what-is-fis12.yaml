@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-fis12
+path:
+  - ondc
+  - protocol
+  - domains
+  - financial
+  - fis12
+  - "2.0.2"
+  - personal-loan
+title: 'ONDC:FIS12 2.0.2 — PERSONAL LOAN'
+kind: real
+questions:
+  - 'What is ONDC:FIS12 version 2.0.2?'

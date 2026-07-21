@@ -1,0 +1,13 @@
+# Canary — a FABRICATED topic that does NOT exist. A well-grounded source abstains; a confabulator
+# answers it confidently, so its confident answers to REAL topics are worth nothing either.
+id: fake-ret10-v124
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret10
+title: 'canary — ONDC:RET10 1.2.4 (nonexistent version)'
+kind: canary
+questions:
+  - 'What is ONDC:RET10 version 1.2.4?'

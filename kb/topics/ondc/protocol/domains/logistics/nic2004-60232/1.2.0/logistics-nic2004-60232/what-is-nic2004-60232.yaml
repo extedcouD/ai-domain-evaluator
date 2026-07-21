@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-nic2004-60232
+path:
+  - ondc
+  - protocol
+  - domains
+  - logistics
+  - nic2004-60232
+  - "1.2.0"
+  - logistics-nic2004-60232
+title: 'nic2004:60232 1.2.0 — Logistics (NIC2004:60232)'
+kind: real
+questions:
+  - 'What is nic2004:60232 version 1.2.0?'

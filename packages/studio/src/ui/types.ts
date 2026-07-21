@@ -144,3 +144,20 @@ export interface Proposal {
   state: "open" | "closed" | "merged";
   createdAt: string;
 }
+
+/** `GET /api/access` — the access policy the Admin page edits. `configured:false` = open mode. */
+export interface AccessPolicyView {
+  configured: boolean;
+  admins: string[];
+  users: { email: string; scopes: string[][] }[];
+  defaultScopes: string[][];
+}
+
+/** `GET /api/admin/overview` — deployment mode + active draft branches (Admin: Users & Activity, Status). */
+export interface AdminOverview {
+  mode: "single" | "multi";
+  reviewEnabled: boolean;
+  accessConfigured: boolean;
+  kbAdmins: string[];
+  branches: { branch: string; login: string; author: string; date: string; message: string }[];
+}

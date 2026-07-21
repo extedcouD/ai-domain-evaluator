@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-ret18
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret18
+  - "1.2.5"
+  - health-wellness
+title: 'ONDC:RET18 1.2.5 — HEALTH&WELLNESS'
+kind: real
+questions:
+  - 'What is ONDC:RET18 version 1.2.5?'

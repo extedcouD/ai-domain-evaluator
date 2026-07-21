@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-fis12
+path:
+  - ondc
+  - protocol
+  - domains
+  - financial
+  - fis12
+  - "2.2.1"
+  - purchase-finance
+title: 'ONDC:FIS12 2.2.1 — PURCHASE FINANCE'
+kind: real
+questions:
+  - 'What is ONDC:FIS12 version 2.2.1?'

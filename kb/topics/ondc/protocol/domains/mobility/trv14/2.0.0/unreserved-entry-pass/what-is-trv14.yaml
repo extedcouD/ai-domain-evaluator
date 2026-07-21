@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-trv14
+path:
+  - ondc
+  - protocol
+  - domains
+  - mobility
+  - trv14
+  - "2.0.0"
+  - unreserved-entry-pass
+title: 'ONDC:TRV14 2.0.0 — unreserved-entry-pass'
+kind: real
+questions:
+  - 'What is ONDC:TRV14 version 2.0.0?'

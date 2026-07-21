@@ -21,11 +21,23 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ConfigError, rollup, type CoverageReport, type Topic } from "@evaluator/core";
+import { simpleGit } from "simple-git";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
-import { canWrite, isAdmin as isAccessAdmin, readAccess, roleFor, scopesFor, type AccessPolicy } from "./access";
+import {
+  canWrite,
+  isAdmin as isAccessAdmin,
+  policyToData,
+  readAccess,
+  renderAccessYaml,
+  roleFor,
+  scopesFor,
+  type AccessPolicy,
+  type PolicyData,
+} from "./access";
 import { makeActorResolver, type Actor } from "./actor";
 import { createGitHubForge } from "./forge";
+import { GitStore } from "./git-store";
 import {
   declaredLevels,
   listNodes,
@@ -93,6 +105,8 @@ interface Ctx {
   coverageDir: string;
   /** The CANONICAL KB (the main tree), the one authoritative source of `access.yaml` — never a worktree. */
   canonicalKbDir: string;
+  /** GitStore committing to the canonical KB — where admin access-policy edits land (its own mutex). */
+  canonicalGit: GitStore;
   /** The git repo root in multi-user mode (to fast-forward local `main` after a merge); null in single mode. */
   repoDir: string | null;
   resolveActor: (req: IncomingMessage) => Actor;
@@ -109,6 +123,7 @@ export function createStudioServer(opts: StudioOptions): Server {
   const ctx: Ctx = {
     coverageDir: opts.coverageDir,
     canonicalKbDir: opts.kbDir,
+    canonicalGit: new GitStore(opts.kbDir),
     repoDir: opts.multiUser?.repoDir ?? null,
     resolveActor,
     router,
@@ -194,6 +209,12 @@ async function handleKb(
   if (method === "POST" && path.startsWith("/api/proposals/")) return await postMergeProposal(res, ctx, ws, path, policy);
   if (method === "POST" && path === "/api/sync") return await postSync(res, ctx, ws);
 
+  // Admin — manage the access policy (commits to canonical `main`) + an operational overview.
+  if (method === "GET" && path === "/api/access") return getAccess(res, ws, policy);
+  if (method === "PUT" && path === "/api/access") return await putAccess(req, res, ctx, ws, policy);
+  if (method === "DELETE" && path === "/api/access") return await deleteAccess(res, ctx, ws, policy);
+  if (method === "GET" && path === "/api/admin/overview") return await getOverview(res, ctx, ws, policy);
+
   sendJson(res, 404, { error: "not found" });
 }
 
@@ -255,6 +276,124 @@ async function postSync(res: ServerResponse, ctx: Ctx, ws: Workspace): Promise<v
   const review = requireReview(ctx);
   const result = await syncFromMain(ws, review);
   sendJson(res, 200, result);
+}
+
+// ---- admin: access policy + overview ------------------------------------------------------------
+
+/** `GET /api/access` — the policy the Admin page edits. `configured:false` = open mode (no access.yaml). */
+function getAccess(res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): void {
+  guardAdmin(policy, ws.actor, "view the access policy");
+  sendJson(res, 200, { configured: policy !== null, ...policyToData(policy) });
+}
+
+/**
+ * `PUT /api/access` — write the access policy to the CANONICAL `access.yaml` and commit it, so it takes
+ * effect immediately (readAccess is mtime-cached off that file). Admin-only, but a no-op guard in open
+ * mode — which is exactly the first-admin bootstrap: the first save names an admin and turns enforcement on.
+ */
+async function putAccess(req: IncomingMessage, res: ServerResponse, ctx: Ctx, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
+  guardAdmin(policy, ws.actor, "change the access policy");
+  const data = validateAccessBody(await readBody(req));
+  const file = join(ctx.canonicalKbDir, "access.yaml");
+  const contents = renderAccessYaml(data);
+  await ctx.canonicalGit.commit({
+    actor: ws.actor,
+    message: "kb: update access policy",
+    mutate: () => ctx.canonicalGit.atomicWrite(file, contents),
+  });
+  await pushCanonical(ctx);
+  sendJson(res, 200, { ok: true });
+}
+
+/** `DELETE /api/access` — remove `access.yaml`, returning the deployment to open mode. Admin-only. */
+async function deleteAccess(res: ServerResponse, ctx: Ctx, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
+  guardAdmin(policy, ws.actor, "disable access control");
+  const file = join(ctx.canonicalKbDir, "access.yaml");
+  if (!existsSync(file)) throw new NotFound("access control is already off (no access.yaml)");
+  await ctx.canonicalGit.commit({
+    actor: ws.actor,
+    message: "kb: disable access control (remove access.yaml)",
+    mutate: () => rmSync(file),
+  });
+  await pushCanonical(ctx);
+  sendJson(res, 200, { ok: true });
+}
+
+/** Publish a canonical-tree commit to the remote base branch (multi-user only). A push failure is a 502. */
+async function pushCanonical(ctx: Ctx): Promise<void> {
+  if (!ctx.review || !ctx.repoDir) return; // single/dev mode: commit locally, nothing to push
+  try {
+    await ctx.canonicalGit.push(ctx.review.remote, ctx.review.baseBranch);
+  } catch (err) {
+    throw new BadGateway(
+      `saved locally but push to ${ctx.review.remote}/${ctx.review.baseBranch} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** Validate + normalize a `PolicyData` body. Rejects a zero-admin policy (that would lock everyone out). */
+function validateAccessBody(body: Record<string, unknown>): PolicyData {
+  const admins = emailList(body["admins"], "admins");
+  if (admins.length < 1) throw new BadRequest("at least one admin is required — use DELETE /api/access to turn access control off");
+  const usersRaw = body["users"];
+  if (!Array.isArray(usersRaw)) throw new BadRequest("users must be an array");
+  const users = usersRaw.map((u) => {
+    const email = u !== null && typeof u === "object" ? (u as Record<string, unknown>)["email"] : undefined;
+    if (typeof email !== "string" || email.trim() === "") throw new BadRequest("each user needs a non-empty email");
+    return { email: email.trim(), scopes: scopeList((u as Record<string, unknown>)["scopes"]) };
+  });
+  return { admins, users, defaultScopes: scopeList(body["defaultScopes"]) };
+}
+
+/** A list of non-empty, trimmed email strings. */
+function emailList(value: unknown, what: string): string[] {
+  if (!Array.isArray(value)) throw new BadRequest(`${what} must be an array`);
+  return value.map((e) => {
+    if (typeof e !== "string" || e.trim() === "") throw new BadRequest(`each ${what} entry must be a non-empty email`);
+    return e.trim();
+  });
+}
+
+/** A list of scope prefixes; each is an array of safe path segments (an empty [] = the root). */
+function scopeList(value: unknown): string[][] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new BadRequest("scopes must be an array of path arrays");
+  return value.map((scope) => {
+    if (!Array.isArray(scope) || !scope.every((s) => typeof s === "string" && SEGMENT_RE.test(s))) {
+      throw new BadRequest(`unsafe scope ${JSON.stringify(scope)}`);
+    }
+    return scope as string[];
+  });
+}
+
+/** `GET /api/admin/overview` — deployment mode + who has an open draft branch (Users & Activity, Status). */
+async function getOverview(res: ServerResponse, ctx: Ctx, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
+  guardAdmin(policy, ws.actor, "view the admin overview");
+  const branches = ctx.repoDir ? await listUserBranches(ctx.repoDir) : [];
+  sendJson(res, 200, {
+    mode: ctx.repoDir ? "multi" : "single",
+    reviewEnabled: ctx.review !== null,
+    accessConfigured: policy !== null,
+    kbAdmins: ctx.review?.admins ?? [],
+    branches,
+  });
+}
+
+/** The per-user draft branches (`user/<login>`) with their last commit — best-effort, `[]` on any error. */
+async function listUserBranches(repoDir: string): Promise<{ branch: string; login: string; author: string; date: string; message: string }[]> {
+  try {
+    const fmt = ["%(refname:short)", "%(authorname)", "%(committerdate:iso-strict)", "%(subject)"].join("\x1f");
+    const out = await simpleGit(repoDir).raw(["for-each-ref", `--format=${fmt}`, "refs/heads/user/"]);
+    return out
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((line) => {
+        const [branch = "", author = "", date = "", ...subj] = line.split("\x1f");
+        return { branch, login: branch.replace(/^user\//, ""), author, date, message: subj.join("\x1f") };
+      });
+  } catch {
+    return [];
+  }
 }
 
 // ---- path helpers -------------------------------------------------------------------------------

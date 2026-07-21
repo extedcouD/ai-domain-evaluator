@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-reteb2b
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - reteb2b
+  - "1.2.5"
+  - eb2b
+title: 'ONDC:RETeB2B 1.2.5 — eB2B'
+kind: real
+questions:
+  - 'What is ONDC:RETeB2B version 1.2.5?'

@@ -10,6 +10,8 @@
  */
 import { slug, topicKey, TOPIC_ID_RE, type StatusBucket } from "./derive";
 import type {
+  AccessPolicyView,
+  AdminOverview,
   CoverageReportWithTree,
   CoverageSummary,
   HistoryData,
@@ -21,7 +23,7 @@ import type {
   Topic,
 } from "./types";
 
-export type View = "author" | "coverage";
+export type View = "author" | "coverage" | "admin";
 
 /** The topic editor's working copy. Several can be open at once (keyed by `eid` in `State.editors`),
  *  each autosaving independently. `original` is the identity currently on disk — null for a brand-new
@@ -88,6 +90,10 @@ export interface State {
   proposalsOpen: boolean;
   proposals: Proposal[] | null;
 
+  // Admin view (admins only): the access policy + an operational overview.
+  access: AccessPolicyView | null;
+  overview: AdminOverview | null;
+
   nextId: number;
 }
 
@@ -114,6 +120,8 @@ export function initialState(): State {
     identity: null,
     proposalsOpen: false,
     proposals: null,
+    access: null,
+    overview: null,
     nextId: 1,
   };
 }
@@ -157,7 +165,10 @@ export type Action =
   // identity + review
   | { type: "identityLoaded"; identity: Identity }
   | { type: "setProposalsOpen"; open: boolean }
-  | { type: "proposalsLoaded"; proposals: Proposal[] };
+  | { type: "proposalsLoaded"; proposals: Proposal[] }
+  // admin
+  | { type: "accessLoaded"; access: AccessPolicyView }
+  | { type: "overviewLoaded"; overview: AdminOverview };
 
 function editorFor(eid: string, topic: Topic, baseVersion: string | null): EditorState {
   return {
@@ -407,6 +418,12 @@ export function reducer(state: State, action: Action): State {
 
     case "proposalsLoaded":
       return { ...state, proposals: action.proposals };
+
+    case "accessLoaded":
+      return { ...state, access: action.access };
+
+    case "overviewLoaded":
+      return { ...state, overview: action.overview };
   }
 }
 

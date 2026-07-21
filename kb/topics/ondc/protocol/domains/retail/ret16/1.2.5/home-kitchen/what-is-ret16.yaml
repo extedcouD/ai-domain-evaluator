@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-ret16
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret16
+  - "1.2.5"
+  - home-kitchen
+title: 'ONDC:RET16 1.2.5 — HOME&KITCHEN'
+kind: real
+questions:
+  - 'What is ONDC:RET16 version 1.2.5?'

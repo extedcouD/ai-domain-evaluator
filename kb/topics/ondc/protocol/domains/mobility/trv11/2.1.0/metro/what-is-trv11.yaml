@@ -1,0 +1,14 @@
+# Real topic — a genuine topic the source SHOULD be able to answer.
+id: what-is-trv11
+path:
+  - ondc
+  - protocol
+  - domains
+  - mobility
+  - trv11
+  - "2.1.0"
+  - metro
+title: 'ONDC:TRV11 2.1.0 — Metro'
+kind: real
+questions:
+  - 'What is ONDC:TRV11 version 2.1.0?'

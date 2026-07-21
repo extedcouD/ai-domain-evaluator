@@ -1,0 +1,13 @@
+# Canary — a FABRICATED topic that does NOT exist. A well-grounded source abstains; a confabulator
+# answers it confidently, so its confident answers to REAL topics are worth nothing either.
+id: fake-ret11-catering
+path:
+  - ondc
+  - protocol
+  - domains
+  - retail
+  - ret11
+title: 'canary — ONDC:RET11 catering (nonexistent usecase)'
+kind: canary
+questions:
+  - 'What is the catering use case in ONDC:RET11?'
