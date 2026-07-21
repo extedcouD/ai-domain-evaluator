@@ -7,7 +7,7 @@
  * is any topic whose `topicKey` matches an editor in `editors`. A brand-new topic (an editor with no
  * `original`) renders as an expanded card in its target group, or an ad-hoc group if that path is empty.
  */
-import type { Dispatch } from "react";
+import { useLayoutEffect, useRef, useState, type Dispatch } from "react";
 
 import {
   emptyHealth,
@@ -112,6 +112,21 @@ export function TopicList(props: {
   // Draft groups whose path has no existing visible group get their own ad-hoc header at the top.
   const orphanDraftGroups = [...draftsByPath.entries()].filter(([k]) => !groupKeys.has(k));
 
+  // The toolbar is sticky at the top of the scroll area and can wrap to a second row (narrow width /
+  // coverage chips). Measure its live height so the sticky group breadcrumbs pin exactly beneath it
+  // instead of at a hardcoded 64px, which would let them float over the cards. See `--toolbar-h` in css.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarH, setToolbarH] = useState(64);
+  useLayoutEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const measure = (): void => setToolbarH(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const renderEditor = (ed: EditorState): React.JSX.Element => (
     <TopicEditorFields
       key={ed.eid}
@@ -128,8 +143,8 @@ export function TopicList(props: {
   );
 
   return (
-    <section className="view">
-      <div className="toolbar">
+    <section className="view" style={{ "--toolbar-h": `${String(toolbarH)}px` } as React.CSSProperties}>
+      <div className="toolbar" ref={toolbarRef}>
         <input
           className="search"
           placeholder="Search topics…"

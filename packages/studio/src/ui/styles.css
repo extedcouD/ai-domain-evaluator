@@ -706,10 +706,10 @@ textarea.f {
   align-items: center;
   gap: 12px;
   padding: 7px 1px;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 .dateline-sep {
-  color: var(--color-neutral-400);
+  color: var(--color-neutral-500);
 }
 .manifest-id {
   font-family: var(--ui-mono);
@@ -722,11 +722,11 @@ textarea.f {
   color: var(--color-text);
 }
 .manifest-id .ver {
-  color: var(--color-neutral-500);
+  color: var(--color-neutral-600);
 }
 .manifest-subject {
   font-style: italic;
-  color: var(--color-neutral-700);
+  color: var(--color-neutral-800);
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -736,8 +736,9 @@ textarea.f {
 .dateline-right {
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  font-size: 10.5px;
-  color: var(--color-neutral-600);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-neutral-800);
   white-space: nowrap;
 }
 .topbar-divider {
@@ -1008,6 +1009,11 @@ textarea.f {
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  /* `.workspace` is a flex column; without this the flex default (shrink:1) squashes `.view` down to
+     one screen height, so its tall content overflows out of the box. That caps the sticky toolbar's
+     containing block at ~1 screen — past that it scrolls away, and the group breadcrumb then pins with
+     nothing above it and collides with the cards. Growing to content height keeps the toolbar pinned. */
+  flex: 1 0 auto;
 }
 .toolbar {
   position: sticky;
@@ -1051,13 +1057,16 @@ textarea.f {
 }
 .group-head {
   position: sticky;
-  top: 64px;
+  /* Pin directly below the sticky toolbar. `--toolbar-h` is measured live in TopicList (the toolbar
+     wraps to a second row on narrow widths / when coverage chips show), so a hardcoded offset would
+     let the bar float into the translucent toolbar and collide with the scrolling cards. */
+  top: var(--toolbar-h, 64px);
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 2px 9px;
+  padding: 16px 0 9px;
   background: var(--color-bg);
-  z-index: 2;
+  z-index: 3;
 }
 .group-head .g-name {
   font-family: var(--font-heading);
@@ -1748,15 +1757,16 @@ select.run {
 /* ---- identity chip + review actions (Phase 1/2) ---- */
 .identity-chip {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--color-neutral-500);
+  font-size: 11.5px;
+  color: var(--color-neutral-700);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 40%;
 }
 .identity-chip code {
-  font-size: 10.5px;
+  font-size: 11px;
+  color: var(--color-neutral-800);
 }
 .review-actions {
   display: flex;
