@@ -9,9 +9,11 @@
  */
 import type { IncomingMessage } from "node:http";
 
-import type { Actor } from "./git-store";
-
-export type { Actor };
+/** Who a request (and the revision it writes) is attributed to. Sourced from the trusted proxy header. */
+export interface Actor {
+  name: string;
+  email: string;
+}
 
 /** The single placeholder identity used when no proxy identity is trusted (dev / single-user). */
 export const DEFAULT_ACTOR: Actor = { name: "KB Studio", email: "studio@localhost" };

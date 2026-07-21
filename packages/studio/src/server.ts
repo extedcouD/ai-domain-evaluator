@@ -1,168 +1,167 @@
 /**
- * KB Studio — a local browser tool to author the manifest and view coverage reports.
+ * KB Studio — a browser tool to author the manifest and view coverage reports, backed by MongoDB.
  *
- * A zero-dependency `node:http` JSON API over the KB folder + the `kb-coverage/*.json` reports, plus a
- * static server for the built front-end (`dist/`, produced by Vite — see src/ui + vite.config.ts). It
- * is a FRONT-END: it does its own filesystem + YAML I/O and never touches a provider SDK (lint-walled).
+ * A `node:http` JSON API over the Mongo store (`workspaces`/`topics`/`config`/`revisions`) plus a static
+ * server for the built front-end (`dist/`). It is a FRONT-END: it does its own storage I/O and never
+ * touches a provider SDK (lint-walled). It does NOT run coverage probes — that needs a model + the
+ * engine's `Run`, which is the CLI's job; the Studio authors the manifest and VIEWS the reports the CLI
+ * writes into `coverageDir`.
  *
- * It deliberately does NOT run coverage probes — that needs a model, `.env`, and the engine's `Run`,
- * which is the CLI's job (`evaluator --coverage kb`). The Studio authors the manifest and *views* the
- * reports the CLI writes.
- *
- * `createStudioServer({ kbDir, coverageDir })` is a factory (dirs injected) so tests point it at temp
- * dirs. Only the entrypoint guard at the bottom calls `listen()`, so importing this module binds no
- * port. Every write validates each path segment + id before touching a path, so a crafted request
- * cannot escape the KB directory.
+ * Storage model: `main` is the canonical KB (admins edit it directly); each author works in a personal
+ * `workspaces.<slug>` copy cloned from main on first write; viewers are read-only. Correctness on a
+ * STANDALONE mongod comes from hash-guarded single-doc ops + ONE process-wide write mutex — every
+ * mutating request runs under `ctx.mutex`, so multi-doc sequences (clone/sync/merge) get a total order
+ * and reads never block. Path segments + ids are validated before every write, so a crafted request
+ * cannot reach an unsafe key.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { Mutex } from "async-mutex";
 import { ConfigError, rollup, type CoverageReport, type Topic } from "@evaluator/core";
-import { simpleGit } from "simple-git";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import {
   canWrite,
   isAdmin as isAccessAdmin,
   policyToData,
-  readAccess,
-  renderAccessYaml,
   roleFor,
   scopesFor,
   type AccessPolicy,
   type PolicyData,
+  type Role,
 } from "./access";
-import { makeActorResolver, type Actor } from "./actor";
-import { createGitHubForge } from "./forge";
-import { GitStore } from "./git-store";
-import {
-  declaredLevels,
-  listNodes,
-  parseTopic,
-  readManifestDir,
-  readMetaObject,
-  renderManifestYaml,
-  SEGMENT_RE,
-  topicPath,
-  TOPIC_ID_RE,
-} from "./manifest-folder";
-import { isAdmin, listProposals, mergeProposal, refreshBase, submitForReview, syncFromMain, type ReviewConfig } from "./propose";
-import { singleWorkspaceRouter, worktreeRouter, type Workspace, type WorkspaceRouter } from "./workspace";
+import { readPolicy, seedPolicy, writePolicy } from "./access-store";
+import { DEFAULT_ACTOR, makeActorResolver, type Actor } from "./actor";
+import { connectDb, ensureIndexes, type DbHandle, type TopicSnapshot, type WorkspaceMeta } from "./db";
+import { appendRevision, getRevision, listDeletions, listHistory } from "./history";
+import { declaredLevels, parseTopic, renderManifestYaml, SEGMENT_RE, TOPIC_ID_RE } from "./manifest-folder";
+import { mergeToMain, resolveConflict, syncFromMain } from "./merge";
+import { importKb } from "./migrate";
+import { getProposal, listProposals, requestReview, withdrawReview } from "./proposals";
+import { atomicWrite, docToTopic, HashConflict, MAIN, ManifestStore, topicKeyOf } from "./store";
+import { ensureUserWorkspace, intendedWorkspace, loginSlug, readWorkspace } from "./workspaces";
 
 export interface StudioOptions {
-  /**
-   * The KB folder: `manifest.meta.yaml` + `topics/<seg…>/*.yaml` (+ the generated `manifest.yaml`). In
-   * multi-user mode this is the MAIN worktree's KB — a read reference whose repo-relative location is
-   * mirrored into each per-user worktree; requests never write it directly.
-   */
-  kbDir: string;
-  /** Where coverage runs are written: `<id>-<epoch>.json`, as the CLI writes them (shared, read-only). */
+  /** The connected database (injected so tests can point at an in-memory mongod). */
+  db: DbHandle;
+  /** Where coverage runs are written by the CLI: `<id>-<epoch>.json` (shared, read-only). */
   coverageDir: string;
+  /** Where `POST /api/export` writes `manifest.yaml` (the evaluator CLI consumes YAML). */
+  exportDir: string;
   /**
-   * Enable branch-per-user routing. When set, each authenticated actor is routed to their own git
-   * worktree on `user/<login>` and the identity header is trusted; when absent, everyone shares `kbDir`
-   * (single-workspace — the Phase 0 behavior every existing test relies on).
+   * Trust the SSO proxy's identity header and route authors to their own workspace. When absent,
+   * everyone is one dev actor on `main` (the single-user local experience).
    */
-  multiUser?: {
-    /** The git repo root (its main worktree holds the canonical KB). */
-    repoDir: string;
-    /** A directory OUTSIDE the main tree that holds the per-user worktrees. */
-    worktreesDir: string;
-  };
-  /**
-   * The review flow (Phase 2): push a user branch + open/merge PRs via a `Forge`. Only meaningful with
-   * `multiUser`. Absent → the `/api/proposals` + `/api/sync` routes report "review not enabled".
-   */
-  review?: ReviewConfig;
+  multiUser?: boolean;
 }
-
-const REAL_HEADER = "# Real topic — a genuine topic the source SHOULD be able to answer.\n";
-const CANARY_HEADER =
-  "# Canary — a FABRICATED topic that does NOT exist. A well-grounded source abstains; a confabulator\n" +
-  "# answers it confidently, so its confident answers to REAL topics are worth nothing either.\n";
-const META_HEADER =
-  "# Manifest identity + subject. Topics live in topics/<seg…>/<id>.yaml; bump version when the set changes.\n\n";
 
 /** The built front-end lives here after `vite build`. Absent in a fresh checkout / in tests. */
 const DIST = fileURLToPath(new URL("../dist", import.meta.url));
 
-/** A malformed request (bad path ref, unparseable body) → 400. Distinct from a ConfigError (422). */
+/** A malformed request (bad path ref, unparseable body) → 400. */
 class BadRequest extends Error {}
 /** A well-formed request for a thing that isn't there → 404. */
 class NotFound extends Error {}
-/** The target changed under the caller (stale optimistic-concurrency token) → 409. Used from Phase 4. */
-class Conflict extends Error {}
-/** The actor is not allowed to touch this path (topic scoping / merge) → 403. */
+/** The actor is not allowed to touch this path (scoping / admin op) → 403. */
 class Forbidden extends Error {}
-/** An upstream (the PR forge, or a git push) failed → 502, so the message reaches the user, not a 500. */
-class BadGateway extends Error {}
 
-/** Everything a request handler needs beyond its own workspace: shared dirs + the per-request routers. */
+/** Everything a request handler needs: the store, the write mutex, shared dirs, and identity. */
 interface Ctx {
+  db: DbHandle;
+  store: ManifestStore;
+  mutex: Mutex;
   coverageDir: string;
-  /** The CANONICAL KB (the main tree), the one authoritative source of `access.yaml` — never a worktree. */
-  canonicalKbDir: string;
-  /** GitStore committing to the canonical KB — where admin access-policy edits land (its own mutex). */
-  canonicalGit: GitStore;
-  /** The git repo root in multi-user mode (to fast-forward local `main` after a merge); null in single mode. */
-  repoDir: string | null;
+  exportDir: string;
+  multiUser: boolean;
   resolveActor: (req: IncomingMessage) => Actor;
-  router: WorkspaceRouter;
-  review: ReviewConfig | null;
 }
 
 export function createStudioServer(opts: StudioOptions): Server {
-  // Multi-user mode is where the identity header is trusted; single mode never reads it (DEFAULT_ACTOR).
-  const resolveActor = makeActorResolver({ trustProxy: opts.multiUser !== undefined });
-  const router: WorkspaceRouter = opts.multiUser
-    ? worktreeRouter({ repoDir: opts.multiUser.repoDir, worktreesDir: opts.multiUser.worktreesDir, kbDir: opts.kbDir })
-    : singleWorkspaceRouter(opts.kbDir);
   const ctx: Ctx = {
+    db: opts.db,
+    store: new ManifestStore(opts.db),
+    mutex: new Mutex(),
     coverageDir: opts.coverageDir,
-    canonicalKbDir: opts.kbDir,
-    canonicalGit: new GitStore(opts.kbDir),
-    repoDir: opts.multiUser?.repoDir ?? null,
-    resolveActor,
-    router,
-    review: opts.review ?? null,
+    exportDir: opts.exportDir,
+    multiUser: opts.multiUser ?? false,
+    resolveActor: makeActorResolver({ trustProxy: opts.multiUser === true }),
   };
   return createServer((req, res) => {
     void handle(req, res, ctx);
   });
 }
 
-/** Enforce topic scoping before a write. A no-op in open mode (no `access.yaml`). */
+/**
+ * First-boot bootstrap: ensure indexes, auto-import the YAML KB into `main` when the folder is present
+ * and main is empty, and seed the access policy when none exists. Idempotent — safe on every boot.
+ */
+export async function bootstrapKb(db: DbHandle, opts: { kbDir: string; seedAdmins: string[]; actor: Actor }): Promise<void> {
+  await ensureIndexes(db);
+  const main = await db.workspaces.findOne({ _id: MAIN });
+  if (!main && existsSync(join(opts.kbDir, "manifest.meta.yaml"))) {
+    try {
+      await importKb(db, opts.kbDir, { seedAdmins: opts.seedAdmins, actor: opts.actor });
+    } catch (err) {
+      process.stderr.write(`kb-studio: first-boot auto-import skipped: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+  const cfg = await db.config.findOne({ _id: "access" });
+  if (!cfg) await seedPolicy(db, opts.seedAdmins, opts.actor);
+}
+
+// ---- authorization helpers ----------------------------------------------------------------------
+
+/** Enforce topic scoping before a write. */
 function guardScope(policy: AccessPolicy | null, actor: Actor, path: string[], verb = "edit"): void {
   if (!canWrite(policy, actor.email, path)) {
     throw new Forbidden(`not allowed to ${verb} "${path.join("/")}" — outside your assigned scope`);
   }
 }
 
-/** Enforce an admin-only op (identity edits). Only bites when an `access.yaml` policy exists. */
+/** Enforce an admin-only op. */
 function guardAdmin(policy: AccessPolicy | null, actor: Actor, verb: string): void {
-  if (policy !== null && !isAccessAdmin(policy, actor.email)) throw new Forbidden(`only an admin can ${verb}`);
+  if (!isAccessAdmin(policy, actor.email)) throw new Forbidden(`only an admin can ${verb}`);
 }
+
+/** Resolve identity + role + the workspace a READ should serve (an author's copy, or main). */
+async function resolveRead(ctx: Ctx, req: IncomingMessage): Promise<{ actor: Actor; role: Role; policy: AccessPolicy | null; ws: string }> {
+  const actor = ctx.resolveActor(req);
+  const policy = await readPolicy(ctx.db);
+  const role = roleFor(policy, actor.email);
+  const ws = await readWorkspace(ctx.db, role, actor);
+  return { actor, role, policy, ws };
+}
+
+/** Run a mutating handler under the process write mutex, with resolved identity + policy. */
+function handleWrite(ctx: Ctx, req: IncomingMessage, fn: (actor: Actor, role: Role, policy: AccessPolicy | null) => Promise<void>): Promise<void> {
+  const actor = ctx.resolveActor(req);
+  return ctx.mutex.runExclusive(async () => {
+    const policy = await readPolicy(ctx.db);
+    const role = roleFor(policy, actor.email);
+    await fn(actor, role, policy);
+  });
+}
+
+/** The workspace a WRITE lands in — an author's copy (cloned on first write) or main. In-mutex only. */
+function targetWs(ctx: Ctx, actor: Actor, role: Role): Promise<string> {
+  return role === "author" ? ensureUserWorkspace(ctx.db, ctx.store, actor) : Promise.resolve(MAIN);
+}
+
+// ---- top-level routing --------------------------------------------------------------------------
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   try {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     const method = req.method ?? "GET";
 
-    // Non-workspace routes: the SPA shell, static assets, and the shared (read-only) coverage reports.
     if (method === "GET" && path === "/") return serveHtml(res);
     if (method === "GET" && path === "/api/coverage") return listCoverage(res, ctx.coverageDir);
     if (method === "GET" && path.startsWith("/api/coverage/")) return getCoverage(req, res, ctx.coverageDir, path);
     if (method === "GET" && !path.startsWith("/api/")) return serveStatic(res, path);
 
-    // Everything else under /api is workspace-scoped: resolve the caller, then their worktree.
-    if (path.startsWith("/api/")) {
-      const actor = ctx.resolveActor(req);
-      const ws = await ctx.router.resolve(actor);
-      return await handleKb(req, res, ctx, ws, method, path);
-    }
+    if (path.startsWith("/api/")) return await handleKb(req, res, ctx, method, path);
 
     sendJson(res, 404, { error: "not found" });
   } catch (err) {
@@ -170,171 +169,393 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Prom
   }
 }
 
-/** Dispatch the workspace-scoped routes against the caller's resolved workspace. */
-async function handleKb(
-  req: IncomingMessage,
-  res: ServerResponse,
-  ctx: Ctx,
-  ws: Workspace,
-  method: string,
-  path: string,
-): Promise<void> {
-  // The scoping policy comes from the CANONICAL KB (main), so a user's worktree copy can't self-escalate.
-  const policy = readAccess(ctx.canonicalKbDir);
+async function handleKb(req: IncomingMessage, res: ServerResponse, ctx: Ctx, method: string, path: string): Promise<void> {
+  if (method === "GET" && path === "/api/whoami") return await getWhoami(req, res, ctx);
+  if (method === "GET" && path === "/api/manifest") return await getManifest(req, res, ctx);
+  if (method === "POST" && path === "/api/topics") return await postTopic(req, res, ctx);
+  if (method === "DELETE" && path.startsWith("/api/topics/")) return await deleteTopic(req, res, ctx, path);
+  if (method === "PUT" && path === "/api/meta") return await putMeta(req, res, ctx);
+  if (method === "POST" && path === "/api/export") return await postExport(req, res, ctx);
+  if (method === "GET" && path === "/api/nodes") return await getNodes(req, res, ctx);
+  if (method === "POST" && path === "/api/nodes") return await postNode(req, res, ctx);
+  if (method === "PUT" && path.startsWith("/api/nodes/")) return await putNode(req, res, ctx, path);
+  if (method === "DELETE" && path.startsWith("/api/nodes/")) return await deleteNode(req, res, ctx, path);
+  if (method === "GET" && path === "/api/history") return await getHistory(req, res, ctx);
+  if (method === "POST" && path === "/api/restore") return await postRestore(req, res, ctx);
 
-  if (method === "GET" && path === "/api/whoami") {
-    return sendJson(res, 200, {
-      actor: ws.actor,
-      branch: ws.branch,
-      role: roleFor(policy, ws.actor.email),
-      scopes: scopesFor(policy, ws.actor.email),
-      review: ctx.review !== null,
-    });
-  }
-  if (method === "GET" && path === "/api/manifest") return sendJson(res, 200, manifestWithVersions(ws.kbDir));
-  if (method === "POST" && path === "/api/topics") return await postTopic(req, res, ws, policy);
-  if (method === "DELETE" && path.startsWith("/api/topics/")) return await deleteTopic(res, ws, path, policy);
-  if (method === "PUT" && path === "/api/meta") return await putMeta(req, res, ws, policy);
-  if (method === "POST" && path === "/api/export") return postExport(res, ws);
-  if (method === "GET" && path === "/api/nodes") return sendJson(res, 200, { nodes: listNodes(ws.kbDir) });
-  if (method === "POST" && path === "/api/nodes") return await postNode(req, res, ws, policy);
-  if (method === "PUT" && path.startsWith("/api/nodes/")) return await putNode(req, res, ws, path, policy);
-  if (method === "DELETE" && path.startsWith("/api/nodes/")) return await deleteNode(req, res, ws, path, policy);
-  if (method === "GET" && path === "/api/history") return await getHistory(req, res, ws);
-  if (method === "POST" && path === "/api/restore") return await postRestore(req, res, ws, policy);
+  // Review flow.
+  if (method === "POST" && path === "/api/proposals") return await postProposal(req, res, ctx);
+  if (method === "GET" && path === "/api/proposals") return await getProposals(req, res, ctx);
+  if (method === "DELETE" && path === "/api/proposals") return await deleteProposal(req, res, ctx);
+  if (method === "POST" && path === "/api/sync/resolve") return await postSyncResolve(req, res, ctx);
+  if (method === "POST" && path === "/api/sync") return await postSync(req, res, ctx);
+  if (method === "GET" && path.startsWith("/api/proposals/")) return await getProposalDetail(res, ctx, path);
+  if (method === "POST" && path.startsWith("/api/proposals/")) return await postMerge(req, res, ctx, path);
 
-  // Phase 2 — the review flow (only when a Forge is configured).
-  if (method === "POST" && path === "/api/proposals") return await postProposal(res, ctx, ws);
-  if (method === "GET" && path === "/api/proposals") return await getProposals(res, ctx);
-  if (method === "POST" && path.startsWith("/api/proposals/")) return await postMergeProposal(res, ctx, ws, path, policy);
-  if (method === "POST" && path === "/api/sync") return await postSync(res, ctx, ws);
-
-  // Admin — manage the access policy (commits to canonical `main`) + an operational overview.
-  if (method === "GET" && path === "/api/access") return getAccess(res, ws, policy);
-  if (method === "PUT" && path === "/api/access") return await putAccess(req, res, ctx, ws, policy);
-  if (method === "DELETE" && path === "/api/access") return await deleteAccess(res, ctx, ws, policy);
-  if (method === "GET" && path === "/api/admin/overview") return await getOverview(res, ctx, ws, policy);
+  // Admin.
+  if (method === "GET" && path === "/api/access") return await getAccess(req, res, ctx);
+  if (method === "PUT" && path === "/api/access") return await putAccess(req, res, ctx);
+  if (method === "GET" && path === "/api/admin/overview") return await getOverview(req, res, ctx);
 
   sendJson(res, 404, { error: "not found" });
 }
 
-// ---- review flow (Phase 2) ----------------------------------------------------------------------
+// ---- whoami + manifest --------------------------------------------------------------------------
 
-/** The configured review flow, or a 400 telling the caller it isn't enabled on this deployment. */
-function requireReview(ctx: Ctx): ReviewConfig {
-  if (!ctx.review) throw new BadRequest("review flow not enabled on this server");
-  return ctx.review;
+async function getWhoami(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { actor, role, policy } = await resolveRead(ctx, req);
+  sendJson(res, 200, {
+    actor,
+    workspace: intendedWorkspace(role, actor),
+    role,
+    scopes: scopesFor(policy, actor.email),
+    review: ctx.multiUser,
+  });
 }
 
-/** Push the caller's branch and open (or return) its PR. Upstream failures surface as 502, not 500. */
-async function postProposal(res: ServerResponse, ctx: Ctx, ws: Workspace): Promise<void> {
-  const review = requireReview(ctx);
-  try {
-    const proposal = await submitForReview(ws, review);
-    sendJson(res, 200, proposal);
-  } catch (err) {
-    throw new BadGateway(err instanceof Error ? err.message : String(err));
-  }
+async function getManifest(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { ws } = await resolveRead(ctx, req);
+  sendJson(res, 200, await ctx.store.manifestWithVersions(ws));
 }
 
-async function getProposals(res: ServerResponse, ctx: Ctx): Promise<void> {
-  const review = requireReview(ctx);
-  try {
-    sendJson(res, 200, { proposals: await listProposals(review) });
-  } catch (err) {
-    throw new BadGateway(err instanceof Error ? err.message : String(err));
-  }
+// ---- topics -------------------------------------------------------------------------------------
+
+/** A restorable snapshot from a topic + its hash (for a save/rename revision). */
+function topicSnapshot(topic: Topic, hash: string): TopicSnapshot {
+  return { key: topicKeyOf(topic), path: topic.path, id: topic.id, title: topic.title, kind: topic.kind, questions: topic.questions, hash };
 }
 
-/** Merge a proposal (admin only) — `POST /api/proposals/<n>/merge`. */
-async function postMergeProposal(res: ServerResponse, ctx: Ctx, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
-  const review = requireReview(ctx);
-  const n = Number(refSegments(path, "/api/proposals/")[0]);
-  if (!Number.isInteger(n) || n <= 0) throw new BadRequest("bad proposal number");
-  // Admin comes from access.yaml when present (Phase 3), else the KB_ADMINS list on the review config.
-  const admin = policy !== null ? isAccessAdmin(policy, ws.actor.email) : isAdmin(review, ws);
-  if (!admin) throw new Forbidden("only an admin can merge a proposal");
-  try {
-    await mergeProposal(review, n);
-  } catch (err) {
-    throw new BadGateway(err instanceof Error ? err.message : String(err));
+/** Resolve the optional rename/move source `{path,id}` from the body, re-validated for path safety. */
+function previousTopicRef(previous: unknown, topic: Topic): { path: string[]; id: string } | null {
+  if (previous === null || typeof previous !== "object") return null;
+  const p = previous as Record<string, unknown>;
+  const pPath = p["path"];
+  const pId = p["id"];
+  if (
+    Array.isArray(pPath) &&
+    pPath.length > 0 &&
+    pPath.every((s) => typeof s === "string" && SEGMENT_RE.test(s)) &&
+    typeof pId === "string" &&
+    TOPIC_ID_RE.test(pId) &&
+    ((pPath as string[]).join("/") !== topic.path.join("/") || pId !== topic.id)
+  ) {
+    return { path: pPath as string[], id: pId };
   }
-  // The PR is merged on the forge; catch the deployment's local `main` up so drafts + new worktrees see
-  // it. Best-effort — a failure here doesn't undo the merge, so it must not fail the response.
-  if (ctx.repoDir) {
+  return null;
+}
+
+async function postTopic(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const body = await readBody(req);
+  const topic = parseTopic(body["topic"]); // ConfigError → 422
+  if (!TOPIC_ID_RE.test(topic.id)) throw new BadRequest(`unsafe topic id "${topic.id}"`);
+  const previous = previousTopicRef(body["previous"], topic);
+  const baseVersion = typeof body["baseVersion"] === "string" ? body["baseVersion"] : null;
+
+  await handleWrite(ctx, req, async (actor, role, policy) => {
+    guardScope(policy, actor, topic.path, previous ? "move" : "save");
+    if (previous) guardScope(policy, actor, previous.path, "move");
+    const ws = await targetWs(ctx, actor, role);
     try {
-      await refreshBase(ctx.repoDir, review.remote, review.baseBranch);
+      const { hash, renamedFrom } = await ctx.store.putTopic(ws, topic, { previous, baseVersion, actor });
+      await appendRevision(ctx.db, {
+        workspace: ws,
+        actor,
+        action: renamedFrom ? "rename" : "save",
+        topicKey: topicKeyOf(topic),
+        after: topicSnapshot(topic, hash),
+        message: `${renamedFrom ? "rename" : "save"} topic ${topicKeyOf(topic)}`,
+      });
+      sendJson(res, 200, { ok: true, version: hash });
     } catch (err) {
-      process.stderr.write(`kb-studio: base refresh after merge failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      if (err instanceof HashConflict) {
+        return sendJson(res, 409, { error: "this topic changed since you opened it", current: docToTopic(err.current), currentVersion: err.current.hash });
+      }
+      throw err;
     }
-  }
-  sendJson(res, 200, { ok: true });
+  });
 }
 
-/** Bring the base branch into the caller's draft (`POST /api/sync`); a conflict is reported, not thrown. */
-async function postSync(res: ServerResponse, ctx: Ctx, ws: Workspace): Promise<void> {
-  const review = requireReview(ctx);
-  const result = await syncFromMain(ws, review);
-  sendJson(res, 200, result);
+async function deleteTopic(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const parts = refSegments(path, "/api/topics/");
+  const id = parts.pop() ?? "";
+  if (parts.length === 0 || !parts.every((s) => SEGMENT_RE.test(s)) || !TOPIC_ID_RE.test(id)) throw new BadRequest("bad topic ref");
+
+  await handleWrite(ctx, req, async (actor, role, policy) => {
+    guardScope(policy, actor, parts, "delete");
+    const ws = await targetWs(ctx, actor, role);
+    const removed = await ctx.store.deleteTopic(ws, parts, id);
+    if (!removed) throw new NotFound("no such topic");
+    await appendRevision(ctx.db, {
+      workspace: ws,
+      actor,
+      action: "delete",
+      topicKey: removed.key,
+      before: { key: removed.key, path: removed.path, id: removed.id, title: removed.title, kind: removed.kind, questions: removed.questions, hash: removed.hash },
+      message: `delete topic ${removed.key}`,
+    });
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+// ---- meta + export ------------------------------------------------------------------------------
+
+async function putMeta(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const body = await readBody(req);
+  const id = body["id"];
+  const version = body["version"];
+  if (typeof id !== "string" || id.trim() === "" || typeof version !== "string" || version.trim() === "") {
+    throw new BadRequest("id and version must be non-empty strings");
+  }
+
+  await handleWrite(ctx, req, async (actor, role, policy) => {
+    guardAdmin(policy, actor, "edit the manifest identity"); // meta is a KB-wide, admin-only setting
+    const ws = await targetWs(ctx, actor, role); // admins → main
+    const current = await ctx.store.getWorkspace(ws);
+    const meta: WorkspaceMeta = { id: id.trim(), version: version.trim() };
+    const subject = body["subject"];
+    const keptSubject = subject === "" || subject === null ? undefined : typeof subject === "string" ? subject : current?.meta.subject;
+    if (keptSubject) meta.subject = keptSubject;
+    const levels = body["levels"] !== undefined ? declaredLevels({ levels: body["levels"] }) : (current?.meta.levels ?? []); // ConfigError → 422
+    if (levels.length) meta.levels = levels;
+
+    await ctx.store.putMeta(ws, meta);
+    await appendRevision(ctx.db, { workspace: ws, actor, action: "meta", message: `update manifest identity (${meta.id} ${meta.version})` });
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+async function postExport(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { ws } = await resolveRead(ctx, req);
+  const manifest = await ctx.store.assembledManifest(ws); // ConfigError → 422
+  const file = join(ctx.exportDir, "manifest.yaml");
+  atomicWrite(file, renderManifestYaml(manifest));
+  sendJson(res, 200, { ok: true, path: file, topics: manifest.topics.length });
+}
+
+// ---- nodes --------------------------------------------------------------------------------------
+
+async function getNodes(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { ws } = await resolveRead(ctx, req);
+  sendJson(res, 200, { nodes: await ctx.store.listNodes(ws) });
+}
+
+async function postNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const body = await readBody(req);
+  const path = safePath(body["path"], "node path");
+  await handleWrite(ctx, req, async (actor, role, policy) => {
+    guardScope(policy, actor, path, "create a node at");
+    const ws = await targetWs(ctx, actor, role);
+    await ctx.store.createNode(ws, path);
+    await appendRevision(ctx.db, { workspace: ws, actor, action: "node-create", message: `create node ${path.join("/")}` });
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+async function putNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const from = refSegments(path, "/api/nodes/");
+  if (from.length === 0 || !from.every((s) => SEGMENT_RE.test(s))) throw new BadRequest("bad node ref");
+  const body = await readBody(req);
+  const to = safePath(body["to"], "target path");
+  if (from.join("/") === to.join("/")) return sendJson(res, 200, { ok: true, moved: 0 });
+  if (to.length > from.length && from.every((s, i) => s === to[i])) throw new BadRequest("cannot move a node into its own subtree");
+
+  await handleWrite(ctx, req, async (actor, role, policy) => {
+    guardScope(policy, actor, from, "move");
+    guardScope(policy, actor, to, "move into");
+    const ws = await targetWs(ctx, actor, role);
+    if ((await ctx.store.subtreeTopicCount(ws, to)) > 0) throw new BadRequest(`target "${to.join("/")}" already exists and has topics`);
+    const moved = await ctx.store.moveNode(ws, from, to, actor);
+    await appendRevision(ctx.db, { workspace: ws, actor, action: "node-move", message: `move node ${from.join("/")} → ${to.join("/")} (${String(moved)} topic(s))` });
+    sendJson(res, 200, { ok: true, moved });
+  });
+}
+
+async function deleteNode(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const node = refSegments(path, "/api/nodes/");
+  if (node.length === 0 || !node.every((s) => SEGMENT_RE.test(s))) throw new BadRequest("bad node ref");
+  const url = new URL(req.url ?? "", "http://localhost");
+  const cascade = url.searchParams.get("cascade") === "1";
+  const confirm = url.searchParams.get("confirm");
+
+  await handleWrite(ctx, req, async (actor, role, policy) => {
+    guardScope(policy, actor, node, "delete");
+    const ws = await targetWs(ctx, actor, role);
+    const count = await ctx.store.subtreeTopicCount(ws, node);
+    if (count && !cascade) throw new BadRequest(`node "${node.join("/")}" has ${String(count)} topic(s) — move or delete them first, or pass ?cascade=1.`);
+    if (count && cascade && confirm !== node.join("/")) throw new BadRequest(`cascade delete of "${node.join("/")}" needs confirm=${node.join("/")}`);
+
+    const removed = await ctx.store.deleteNode(ws, node, cascade);
+    for (const d of removed) {
+      await appendRevision(ctx.db, {
+        workspace: ws,
+        actor,
+        action: "delete",
+        topicKey: d.key,
+        before: { key: d.key, path: d.path, id: d.id, title: d.title, kind: d.kind, questions: d.questions, hash: d.hash },
+        message: `delete topic ${d.key} (cascade ${node.join("/")})`,
+      });
+    }
+    await appendRevision(ctx.db, { workspace: ws, actor, action: "node-delete", message: `delete node ${node.join("/")}${count ? ` (${String(count)} topic(s))` : ""}` });
+    sendJson(res, 200, { ok: true, deleted: count });
+  });
+}
+
+// ---- history + restore --------------------------------------------------------------------------
+
+async function getHistory(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { ws } = await resolveRead(ctx, req);
+  const url = new URL(req.url ?? "", "http://localhost");
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
+  const pathParam = url.searchParams.get("path");
+
+  let topicKey: string | undefined;
+  if (pathParam) {
+    const segs = pathParam.split("/").filter(Boolean);
+    const id = segs.pop() ?? "";
+    if (segs.length === 0 || !segs.every((s) => SEGMENT_RE.test(s)) || !TOPIC_ID_RE.test(id)) throw new BadRequest("bad history path");
+    topicKey = [...segs, id].join("/");
+  }
+
+  const commits = await listHistory(ctx.db, ws, topicKey !== undefined ? { limit, topicKey } : { limit });
+  const deletions = topicKey ? [] : await listDeletions(ctx.db, ws, limit);
+  sendJson(res, 200, { commits, deletions });
+}
+
+async function postRestore(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const body = await readBody(req);
+  const sha = body["sha"];
+  if (typeof sha !== "string") throw new BadRequest("bad sha");
+  const path = safePath(body["path"], "restore path");
+  const id = body["id"];
+  if (typeof id !== "string" || !TOPIC_ID_RE.test(id)) throw new BadRequest("bad restore id");
+
+  await handleWrite(ctx, req, async (actor, role, policy) => {
+    guardScope(policy, actor, path, "restore");
+    const rev = await getRevision(ctx.db, sha);
+    const before = rev?.before;
+    if (!before) throw new NotFound("nothing to restore at that revision");
+    const ws = await targetWs(ctx, actor, role);
+    const topic: Topic = { id: before.id, path: before.path, title: before.title, kind: before.kind, questions: before.questions };
+    const { hash } = await ctx.store.putTopic(ws, topic, { actor });
+    await appendRevision(ctx.db, { workspace: ws, actor, action: "restore", topicKey: before.key, after: { ...before, hash }, message: `restore topic ${before.key}` });
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+// ---- review flow --------------------------------------------------------------------------------
+
+async function postProposal(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const body = await readBody(req);
+  const note = typeof body["note"] === "string" ? body["note"] : null;
+  await handleWrite(ctx, req, async (actor, role) => {
+    if (role !== "author") throw new BadRequest("nothing to propose — you are not working in a personal workspace");
+    const ws = await targetWs(ctx, actor, role);
+    await requestReview(ctx.db, ws, note);
+    const proposals = await listProposals(ctx.db);
+    const mine = proposals.find((p) => p.workspace === ws);
+    sendJson(res, 200, mine ?? { id: ws, workspace: ws, author: actor.email, authorName: actor.name, state: "requested", createdAt: null, note, changes: { added: 0, edited: 0, deleted: 0, conflicted: 0 } });
+  });
+}
+
+async function getProposals(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  await resolveRead(ctx, req); // identity resolved for consistency; the queue itself is not secret
+  sendJson(res, 200, { proposals: await listProposals(ctx.db) });
+}
+
+async function getProposalDetail(res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const id = refSegments(path, "/api/proposals/")[0];
+  if (!id) throw new BadRequest("bad proposal id");
+  const detail = await getProposal(ctx.db, id);
+  if (!detail) throw new NotFound("no such proposal");
+  sendJson(res, 200, detail);
+}
+
+async function deleteProposal(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  await handleWrite(ctx, req, async (actor, role) => {
+    if (role !== "author") throw new BadRequest("no proposal to withdraw");
+    const ws = loginSlug(actor);
+    await withdrawReview(ctx.db, ws);
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+async function postMerge(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const segs = refSegments(path, "/api/proposals/");
+  const id = segs[0];
+  if (!id || segs[1] !== "merge") throw new BadRequest("bad merge ref");
+  await handleWrite(ctx, req, async (actor, _role, policy) => {
+    guardAdmin(policy, actor, "merge a proposal");
+    const result = await mergeToMain(ctx.db, id, actor);
+    if (!result.ok) return sendJson(res, 409, { error: "the proposal conflicts with main — the author must sync and resolve first", conflicts: result.conflicts });
+    sendJson(res, 200, { ok: true, merged: result.merged });
+  });
+}
+
+async function postSync(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  await handleWrite(ctx, req, async (actor, role) => {
+    if (role !== "author") throw new BadRequest("nothing to sync — you are not working in a personal workspace");
+    const ws = await targetWs(ctx, actor, role);
+    sendJson(res, 200, await syncFromMain(ctx.db, ctx.store, ws, actor));
+  });
+}
+
+async function postSyncResolve(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const body = await readBody(req);
+  const key = body["key"];
+  const choose = body["choose"];
+  if (typeof key !== "string" || (choose !== "mine" && choose !== "theirs")) throw new BadRequest("resolve needs { key, choose: 'mine'|'theirs' }");
+  await handleWrite(ctx, req, async (actor, role) => {
+    if (role !== "author") throw new BadRequest("no conflict to resolve");
+    const ws = loginSlug(actor);
+    const ok = await resolveConflict(ctx.db, ws, key, choose, actor);
+    if (!ok) throw new NotFound("no such conflict");
+    sendJson(res, 200, { ok: true });
+  });
 }
 
 // ---- admin: access policy + overview ------------------------------------------------------------
 
-/** `GET /api/access` — the policy the Admin page edits. `configured:false` = open mode (no access.yaml). */
-function getAccess(res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): void {
-  guardAdmin(policy, ws.actor, "view the access policy");
+async function getAccess(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { actor, policy } = await resolveRead(ctx, req);
+  guardAdmin(policy, actor, "view the access policy");
   sendJson(res, 200, { configured: policy !== null, ...policyToData(policy) });
 }
 
-/**
- * `PUT /api/access` — write the access policy to the CANONICAL `access.yaml` and commit it, so it takes
- * effect immediately (readAccess is mtime-cached off that file). Admin-only, but a no-op guard in open
- * mode — which is exactly the first-admin bootstrap: the first save names an admin and turns enforcement on.
- */
-async function putAccess(req: IncomingMessage, res: ServerResponse, ctx: Ctx, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
-  guardAdmin(policy, ws.actor, "change the access policy");
+async function putAccess(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   const data = validateAccessBody(await readBody(req));
-  const file = join(ctx.canonicalKbDir, "access.yaml");
-  const contents = renderAccessYaml(data);
-  await ctx.canonicalGit.commit({
-    actor: ws.actor,
-    message: "kb: update access policy",
-    mutate: () => ctx.canonicalGit.atomicWrite(file, contents),
+  await handleWrite(ctx, req, async (actor, _role, policy) => {
+    // First-admin bootstrap: with no policy yet, anyone may set it (naming themselves admin).
+    if (policy !== null) guardAdmin(policy, actor, "change the access policy");
+    await writePolicy(ctx.db, data, actor);
+    await appendRevision(ctx.db, { workspace: MAIN, actor, action: "access", message: "update access policy" });
+    sendJson(res, 200, { ok: true });
   });
-  await pushCanonical(ctx);
-  sendJson(res, 200, { ok: true });
 }
 
-/** `DELETE /api/access` — remove `access.yaml`, returning the deployment to open mode. Admin-only. */
-async function deleteAccess(res: ServerResponse, ctx: Ctx, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
-  guardAdmin(policy, ws.actor, "disable access control");
-  const file = join(ctx.canonicalKbDir, "access.yaml");
-  if (!existsSync(file)) throw new NotFound("access control is already off (no access.yaml)");
-  await ctx.canonicalGit.commit({
-    actor: ws.actor,
-    message: "kb: disable access control (remove access.yaml)",
-    mutate: () => rmSync(file),
+async function getOverview(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { actor, policy } = await resolveRead(ctx, req);
+  guardAdmin(policy, actor, "view the admin overview");
+  const wsDocs = await ctx.db.workspaces.find({ _id: { $ne: MAIN } }).sort({ updatedAt: -1 }).toArray();
+  const workspaces = wsDocs.map((w) => ({
+    workspace: w._id,
+    owner: w.owner,
+    ownerName: w.ownerName ?? null,
+    updatedAt: w.updatedAt.toISOString(),
+    reviewStatus: w.reviewStatus,
+  }));
+  sendJson(res, 200, {
+    mode: ctx.multiUser ? "multi" : "single",
+    reviewEnabled: ctx.multiUser,
+    accessConfigured: policy !== null,
+    kbAdmins: policy ? [...policy.admins] : [],
+    workspaces,
   });
-  await pushCanonical(ctx);
-  sendJson(res, 200, { ok: true });
-}
-
-/** Publish a canonical-tree commit to the remote base branch (multi-user only). A push failure is a 502. */
-async function pushCanonical(ctx: Ctx): Promise<void> {
-  if (!ctx.review || !ctx.repoDir) return; // single/dev mode: commit locally, nothing to push
-  try {
-    await ctx.canonicalGit.push(ctx.review.remote, ctx.review.baseBranch);
-  } catch (err) {
-    throw new BadGateway(
-      `saved locally but push to ${ctx.review.remote}/${ctx.review.baseBranch} failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
 }
 
 /** Validate + normalize a `PolicyData` body. Rejects a zero-admin policy (that would lock everyone out). */
 function validateAccessBody(body: Record<string, unknown>): PolicyData {
   const admins = emailList(body["admins"], "admins");
-  if (admins.length < 1) throw new BadRequest("at least one admin is required — use DELETE /api/access to turn access control off");
+  if (admins.length < 1) throw new BadRequest("at least one admin is required");
   const usersRaw = body["users"];
   if (!Array.isArray(usersRaw)) throw new BadRequest("users must be an array");
   const users = usersRaw.map((u) => {
@@ -345,7 +566,6 @@ function validateAccessBody(body: Record<string, unknown>): PolicyData {
   return { admins, users, defaultScopes: scopeList(body["defaultScopes"]) };
 }
 
-/** A list of non-empty, trimmed email strings. */
 function emailList(value: unknown, what: string): string[] {
   if (!Array.isArray(value)) throw new BadRequest(`${what} must be an array`);
   return value.map((e) => {
@@ -354,399 +574,29 @@ function emailList(value: unknown, what: string): string[] {
   });
 }
 
-/** A list of scope prefixes; each is an array of safe path segments (an empty [] = the root). */
 function scopeList(value: unknown): string[][] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new BadRequest("scopes must be an array of path arrays");
   return value.map((scope) => {
-    if (!Array.isArray(scope) || !scope.every((s) => typeof s === "string" && SEGMENT_RE.test(s))) {
-      throw new BadRequest(`unsafe scope ${JSON.stringify(scope)}`);
-    }
+    if (!Array.isArray(scope) || !scope.every((s) => typeof s === "string" && SEGMENT_RE.test(s))) throw new BadRequest(`unsafe scope ${JSON.stringify(scope)}`);
     return scope as string[];
   });
 }
 
-/** `GET /api/admin/overview` — deployment mode + who has an open draft branch (Users & Activity, Status). */
-async function getOverview(res: ServerResponse, ctx: Ctx, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
-  guardAdmin(policy, ws.actor, "view the admin overview");
-  const branches = ctx.repoDir ? await listUserBranches(ctx.repoDir) : [];
-  sendJson(res, 200, {
-    mode: ctx.repoDir ? "multi" : "single",
-    reviewEnabled: ctx.review !== null,
-    accessConfigured: policy !== null,
-    kbAdmins: ctx.review?.admins ?? [],
-    branches,
-  });
-}
-
-/** The per-user draft branches (`user/<login>`) with their last commit — best-effort, `[]` on any error. */
-async function listUserBranches(repoDir: string): Promise<{ branch: string; login: string; author: string; date: string; message: string }[]> {
-  try {
-    const fmt = ["%(refname:short)", "%(authorname)", "%(committerdate:iso-strict)", "%(subject)"].join("\x1f");
-    const out = await simpleGit(repoDir).raw(["for-each-ref", `--format=${fmt}`, "refs/heads/user/"]);
-    return out
-      .split("\n")
-      .filter((l) => l.trim() !== "")
-      .map((line) => {
-        const [branch = "", author = "", date = "", ...subj] = line.split("\x1f");
-        return { branch, login: branch.replace(/^user\//, ""), author, date, message: subj.join("\x1f") };
-      });
-  } catch {
-    return [];
-  }
-}
-
 // ---- path helpers -------------------------------------------------------------------------------
 
-/** Split a `/api/…/a/b/c` URL tail into decoded segments, guarding each against `SEGMENT_RE`. */
-function refSegments(path: string, prefix: string): string[] {
-  return path
-    .slice(prefix.length)
-    .split("/")
-    .filter(Boolean)
-    .map(decodeURIComponent);
+/** Split a `/api/…/a/b/c` URL tail into decoded segments (raw — callers validate). */
+function refSegments(path: string, prefix: string[] | string): string[] {
+  const p = typeof prefix === "string" ? prefix : prefix.join("");
+  return path.slice(p.length).split("/").filter(Boolean).map(decodeURIComponent);
 }
 
-/** A body field that must be an array of safe path segments. Throws BadRequest otherwise. */
+/** A body field that must be an array of safe path segments. */
 function safePath(value: unknown, what: string): string[] {
   if (!Array.isArray(value) || value.length === 0 || !value.every((s) => typeof s === "string" && SEGMENT_RE.test(s))) {
     throw new BadRequest(`unsafe ${what} ${JSON.stringify(value)}`);
   }
   return value as string[];
-}
-
-/** Count the `.yaml` topics anywhere under a directory subtree. */
-function countSubtreeTopics(dir: string): number {
-  if (!existsSync(dir)) return 0;
-  let n = 0;
-  for (const ent of readdirSync(dir, { withFileTypes: true })) {
-    if (ent.isFile() && ent.name.endsWith(".yaml")) n++;
-    else if (ent.isDirectory()) n += countSubtreeTopics(join(dir, ent.name));
-  }
-  return n;
-}
-
-/** Every directory anywhere under a subtree (including empty ones), as segment paths relative to `base`. */
-function collectDirs(base: string, prefix: string[] = []): string[][] {
-  const here = join(base, ...prefix);
-  const out: string[][] = [];
-  if (!existsSync(here)) return out;
-  for (const ent of readdirSync(here, { withFileTypes: true })) {
-    if (ent.isDirectory() && SEGMENT_RE.test(ent.name)) {
-      const path = [...prefix, ent.name];
-      out.push(path);
-      out.push(...collectDirs(base, path));
-    }
-  }
-  return out;
-}
-
-/** Every topic file under a subtree, with its full folder-derived path (relative to `topics/`). */
-function collectSubtree(kbDir: string, prefix: string[]): { path: string[]; id: string; file: string }[] {
-  const base = join(kbDir, "topics", ...prefix);
-  const out: { path: string[]; id: string; file: string }[] = [];
-  if (!existsSync(base)) return out;
-  for (const ent of readdirSync(base, { withFileTypes: true })) {
-    if (ent.isDirectory() && SEGMENT_RE.test(ent.name)) out.push(...collectSubtree(kbDir, [...prefix, ent.name]));
-    else if (ent.isFile() && ent.name.endsWith(".yaml")) {
-      out.push({ path: prefix, id: ent.name.slice(0, -".yaml".length), file: join(base, ent.name) });
-    }
-  }
-  return out;
-}
-
-// ---- topics ------------------------------------------------------------------------------------
-
-/** A short content hash used as an optimistic-concurrency token for a topic file. */
-function version(content: string): string {
-  return createHash("sha256").update(content).digest("hex").slice(0, 16);
-}
-
-/** The manifest plus a `versions` map (topicKey → content hash) the UI sends back as `baseVersion`. */
-function manifestWithVersions(kbDir: string): Record<string, unknown> {
-  const manifest = readManifestDir(kbDir);
-  const versions: Record<string, string> = {};
-  for (const t of manifest.topics) {
-    const file = topicPath(kbDir, t.path, t.id);
-    if (existsSync(file)) versions[[...t.path, t.id].join("/")] = version(readFileSync(file, "utf8"));
-  }
-  return { ...manifest, versions };
-}
-
-async function postTopic(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
-  const { kbDir, git, actor } = ws;
-  const body = await readBody(req);
-  const topic = parseTopic(body["topic"]); // ConfigError → 422 on a malformed topic
-  if (!TOPIC_ID_RE.test(topic.id)) throw new BadRequest(`unsafe topic id "${topic.id}"`);
-
-  const path = topicPath(kbDir, topic.path, topic.id);
-  const prev = previousTopicRef(kbDir, body["previous"], topic); // a rename/move source, or null
-  guardScope(policy, actor, topic.path, prev ? "move" : "save");
-  if (prev) guardScope(policy, actor, prev.path, "move"); // moving OUT of a node needs scope there too
-
-  // Optimistic concurrency: if the caller sent the version it edited from and the on-disk file has moved
-  // since (another tab, or a shared workspace), refuse with 409 + the current copy instead of clobbering.
-  const baseVersion = typeof body["baseVersion"] === "string" ? body["baseVersion"] : null;
-  const checkFile = prev ? prev.file : path;
-  if (baseVersion !== null && existsSync(checkFile)) {
-    const onDisk = readFileSync(checkFile, "utf8");
-    const currentVersion = version(onDisk);
-    if (currentVersion !== baseVersion) {
-      return sendJson(res, 409, { error: "this topic changed since you opened it", current: parseTopic(parseYaml(onDisk)), currentVersion });
-    }
-  }
-
-  const content = renderTopicFile(topic);
-  await git.commit({
-    actor,
-    message: `kb: ${prev ? "rename" : "save"} topic ${topic.path.join("/")}/${topic.id}`,
-    // Write the new file first, then delete the old one, so a failure never orphans (unchanged order).
-    mutate: () => {
-      mkdirSync(dirname(path), { recursive: true });
-      git.atomicWrite(path, content);
-      if (prev && existsSync(prev.file)) rmSync(prev.file);
-    },
-  });
-
-  sendJson(res, 200, { ok: true, version: version(content) });
-}
-
-/**
- * Resolve a rename/move source from the optional `previous: {path, id}` body field — its on-disk `file`
- * (to delete) and `path` (to scope-check) — or null when absent, malformed, or the same identity.
- * Segment/id safety is re-checked here so a crafted `previous` can never delete outside `topics/`.
- */
-function previousTopicRef(kbDir: string, previous: unknown, topic: Topic): { file: string; path: string[] } | null {
-  if (previous === null || typeof previous !== "object") return null;
-  const p = previous as Record<string, unknown>;
-  const pPath = p["path"];
-  const pId = p["id"];
-  if (
-    Array.isArray(pPath) &&
-    pPath.every((s) => typeof s === "string" && SEGMENT_RE.test(s)) &&
-    pPath.length > 0 &&
-    typeof pId === "string" &&
-    TOPIC_ID_RE.test(pId) &&
-    ((pPath as string[]).join("/") !== topic.path.join("/") || pId !== topic.id)
-  ) {
-    return { file: topicPath(kbDir, pPath as string[], pId), path: pPath as string[] };
-  }
-  return null;
-}
-
-async function deleteTopic(res: ServerResponse, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
-  const { kbDir, git, actor } = ws;
-  const parts = refSegments(path, "/api/topics/"); // [seg, seg, …, id]
-  const id = parts.pop() ?? "";
-  if (parts.length === 0 || !parts.every((s) => SEGMENT_RE.test(s)) || !TOPIC_ID_RE.test(id)) {
-    throw new BadRequest("bad topic ref");
-  }
-  guardScope(policy, actor, parts, "delete");
-
-  const target = topicPath(kbDir, parts, id);
-  if (!existsSync(target)) throw new NotFound("no such topic");
-  await git.commit({
-    actor,
-    message: `kb: delete topic ${parts.join("/")}/${id}`,
-    mutate: () => rmSync(target),
-  });
-  sendJson(res, 200, { ok: true });
-}
-
-function renderTopicFile(topic: Topic): string {
-  const header = topic.kind === "canary" ? CANARY_HEADER : REAL_HEADER;
-  // Explicit key order for stable, readable diffs (id, path, title, kind, questions).
-  const ordered = { id: topic.id, path: topic.path, title: topic.title, kind: topic.kind, questions: topic.questions };
-  return header + stringifyYaml(ordered);
-}
-
-// ---- meta + export ------------------------------------------------------------------------------
-
-async function putMeta(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
-  const { kbDir, git, actor } = ws;
-  guardAdmin(policy, actor, "edit the manifest identity"); // meta is a KB-wide setting
-  const body = await readBody(req);
-  const id = body["id"];
-  const version = body["version"];
-  if (typeof id !== "string" || id.trim() === "" || typeof version !== "string" || version.trim() === "") {
-    throw new BadRequest("id and version must be non-empty strings");
-  }
-  // Preserve existing meta; allow explicit updates. Identity, the subject, and level labels share the file.
-  const meta: Record<string, unknown> = { ...readMetaObject(kbDir), id, version };
-  const subject = body["subject"];
-  if (subject === "" || subject === null) delete meta["subject"];
-  else if (typeof subject === "string") meta["subject"] = subject;
-  if (body["levels"] !== undefined) meta["levels"] = body["levels"];
-
-  // Build (and validate `levels` via declaredLevels) BEFORE the commit, so a bad request never lands a
-  // no-op commit; the mutation then only writes bytes.
-  const contents = renderMeta(meta);
-  await git.commit({
-    actor,
-    message: `kb: update manifest identity (${id} ${version})`,
-    mutate: () => git.atomicWrite(join(kbDir, "manifest.meta.yaml"), contents),
-  });
-  sendJson(res, 200, { ok: true });
-}
-
-/** Serialize `manifest.meta.yaml` content — `{ id, version }`, the subject, and the level LABELS. */
-function renderMeta(meta: Record<string, unknown>): string {
-  const out: Record<string, unknown> = { id: meta["id"], version: meta["version"] };
-  if (typeof meta["subject"] === "string" && meta["subject"].trim() !== "") out["subject"] = meta["subject"];
-  const levels = declaredLevels(meta); // throws ConfigError → 422 on a bad label
-  if (levels.length) out["levels"] = levels;
-  return META_HEADER + stringifyYaml(out);
-}
-
-// ---- nodes (taxonomy path folders) --------------------------------------------------------------
-
-/** Create a node: make its (empty) folder subtree so it shows up before it has topics. */
-async function postNode(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
-  const { kbDir, git, actor } = ws;
-  const body = await readBody(req);
-  const path = safePath(body["path"], "node path");
-  guardScope(policy, actor, path, "create a node at");
-  // git doesn't track empty dirs, so this commit is typically a no-op — the folder still exists on disk
-  // for listNodes, and it becomes real history the moment the node holds a topic.
-  await git.commit({
-    actor,
-    message: `kb: create node ${path.join("/")}`,
-    mutate: () => mkdirSync(join(kbDir, "topics", ...path), { recursive: true }),
-  });
-  sendJson(res, 200, { ok: true });
-}
-
-/** Rename/move a node: move its subtree, prefix-rewriting each contained topic's `path`. */
-async function putNode(req: IncomingMessage, res: ServerResponse, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
-  const { kbDir, git, actor } = ws;
-  const from = refSegments(path, "/api/nodes/");
-  if (from.length === 0 || !from.every((s) => SEGMENT_RE.test(s))) throw new BadRequest("bad node ref");
-  const body = await readBody(req);
-  const to = safePath(body["to"], "target path");
-  if (from.join("/") === to.join("/")) return sendJson(res, 200, { ok: true, moved: 0 });
-  // A move must be within scope on BOTH sides, or it could smuggle a subtree across an ownership boundary.
-  guardScope(policy, actor, from, "move");
-  guardScope(policy, actor, to, "move into");
-
-  const fromDir = join(kbDir, "topics", ...from);
-  const toDir = join(kbDir, "topics", ...to);
-  if (countSubtreeTopics(toDir) > 0) throw new BadRequest(`target "${to.join("/")}" already exists and has topics`);
-
-  // Re-path + RE-VALIDATE every moved topic up front (ConfigError → 422), so the commit's mutation is
-  // pure fs work that can't throw halfway and leave a partial move uncommitted in the working tree.
-  const dirs = collectDirs(fromDir);
-  const moves = collectSubtree(kbDir, from).map((item) => {
-    const raw = parseYaml(readFileSync(item.file, "utf8")) as Record<string, unknown>;
-    const newPath = [...to, ...item.path.slice(from.length)]; // replace the `from` prefix with `to`
-    const topic = parseTopic({ ...raw, path: newPath });
-    return { src: item.file, dest: topicPath(kbDir, topic.path, topic.id), contents: renderTopicFile(topic) };
-  });
-
-  await git.commit({
-    actor,
-    message: `kb: move node ${from.join("/")} → ${to.join("/")} (${String(moves.length)} topic(s))`,
-    mutate: () => {
-      // Recreate the full directory shape FIRST — including topic-less branches — so an empty subtree
-      // still exists at `to` after `fromDir` is removed.
-      mkdirSync(toDir, { recursive: true });
-      for (const rel of dirs) mkdirSync(join(toDir, ...rel), { recursive: true });
-      // Write-new-then-remove per file, so a mid-move failure never orphans a topic.
-      for (const m of moves) {
-        mkdirSync(dirname(m.dest), { recursive: true });
-        git.atomicWrite(m.dest, m.contents);
-        rmSync(m.src);
-      }
-      if (existsSync(fromDir)) rmSync(fromDir, { recursive: true, force: true });
-    },
-  });
-  sendJson(res, 200, { ok: true, moved: moves.length });
-}
-
-/** Delete a node: refuses a non-empty subtree unless `?cascade=1`, which also removes its topic files. */
-async function deleteNode(req: IncomingMessage, res: ServerResponse, ws: Workspace, path: string, policy: AccessPolicy | null): Promise<void> {
-  const { kbDir, git, actor } = ws;
-  const node = refSegments(path, "/api/nodes/");
-  if (node.length === 0 || !node.every((s) => SEGMENT_RE.test(s))) throw new BadRequest("bad node ref");
-  guardScope(policy, actor, node, "delete");
-  const url = new URL(req.url ?? "", "http://localhost");
-  const cascade = url.searchParams.get("cascade") === "1";
-  const dir = join(kbDir, "topics", ...node);
-  const count = countSubtreeTopics(dir);
-  if (count && !cascade) {
-    throw new BadRequest(
-      `node "${node.join("/")}" has ${String(count)} topic(s) — move or delete them first, or pass ?cascade=1.`,
-    );
-  }
-  // A cascade wipes a whole subtree — require the caller to echo the node path (type-to-confirm), so a
-  // stray click can't nuke a populated node. (Every removed file is still restorable from history.)
-  if (count && cascade && url.searchParams.get("confirm") !== node.join("/")) {
-    throw new BadRequest(`cascade delete of "${node.join("/")}" needs confirm=${node.join("/")}`);
-  }
-  await git.commit({
-    actor,
-    message: `kb: delete node ${node.join("/")}${count ? ` (${String(count)} topic(s))` : ""}`,
-    mutate: () => {
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-    },
-  });
-  sendJson(res, 200, { ok: true, deleted: count });
-}
-
-function postExport(res: ServerResponse, ws: Workspace): void {
-  const { kbDir, git } = ws;
-  const manifest = readManifestDir(kbDir); // ConfigError → 422 if the folder is invalid
-  const path = join(kbDir, "manifest.yaml");
-  // A derived, gitignored artifact — write it atomically but don't commit (Phase 0 gitignores it).
-  git.atomicWrite(path, renderManifestYaml(manifest));
-  sendJson(res, 200, { ok: true, path, topics: manifest.topics.length });
-}
-
-// ---- history + restore (the safety net's read + recovery surface) -------------------------------
-
-/**
- * `GET /api/history` → recent KB commits + deleted topics (the History/Trash panel). `?path=<seg…/id>`
- * narrows to one topic's commit log (no deletions). Empty arrays when the KB dir isn't a git repo.
- */
-async function getHistory(req: IncomingMessage, res: ServerResponse, ws: Workspace): Promise<void> {
-  const { kbDir, git } = ws;
-  const url = new URL(req.url ?? "", "http://localhost");
-  const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
-  const pathParam = url.searchParams.get("path");
-
-  let absPath: string | undefined;
-  if (pathParam) {
-    const segs = pathParam.split("/").filter(Boolean);
-    const id = segs.pop() ?? "";
-    if (segs.length === 0 || !segs.every((s) => SEGMENT_RE.test(s)) || !TOPIC_ID_RE.test(id)) {
-      throw new BadRequest("bad history path");
-    }
-    absPath = topicPath(kbDir, segs, id);
-  }
-
-  const commits = await git.logCommits(absPath, limit);
-  const deletions = absPath ? [] : await git.listDeletions(limit);
-  sendJson(res, 200, { commits, deletions });
-}
-
-/** `POST /api/restore { sha, path, id }` → bring a topic file back from a prior commit, as a new commit. */
-async function postRestore(req: IncomingMessage, res: ServerResponse, ws: Workspace, policy: AccessPolicy | null): Promise<void> {
-  const { kbDir, git, actor } = ws;
-  const body = await readBody(req);
-  const sha = body["sha"];
-  // A git revision the History/Trash view handed us: a hex sha, optionally with a `~N`/`^` suffix.
-  if (typeof sha !== "string" || !/^[0-9a-f]{4,40}(?:~\d+|\^+)?$/i.test(sha)) throw new BadRequest("bad sha");
-  const path = safePath(body["path"], "restore path");
-  const id = body["id"];
-  if (typeof id !== "string" || !TOPIC_ID_RE.test(id)) throw new BadRequest("bad restore id");
-  guardScope(policy, actor, path, "restore");
-
-  const absPath = topicPath(kbDir, path, id);
-  try {
-    await git.restore({ sha, absPath, actor, message: `kb: restore topic ${path.join("/")}/${id}` });
-  } catch {
-    throw new NotFound("nothing to restore at that revision");
-  }
-  sendJson(res, 200, { ok: true });
 }
 
 // ---- coverage (read-only) -----------------------------------------------------------------------
@@ -777,8 +627,6 @@ function getCoverage(req: IncomingMessage, res: ServerResponse, coverageDir: str
   const p = join(coverageDir, file);
   if (!existsSync(p)) throw new NotFound("no such report");
   const report = JSON.parse(readFileSync(p, "utf8")) as CoverageReport;
-  // `?tree=1`: attach the per-level rollup so the browser gets it without importing the engine (which
-  // would drag a provider SDK into the bundle). The rollup is a pure fold — computing it here is free.
   const wantTree = new URL(req.url ?? "", "http://localhost").searchParams.get("tree") === "1";
   sendJson(res, 200, wantTree ? { ...report, tree: rollup(report).root } : report);
 }
@@ -792,8 +640,6 @@ function serveHtml(res: ServerResponse): void {
     res.end(readFileSync(indexPath, "utf8"));
     return;
   }
-  // No build yet — a hermetic placeholder so `GET /` works (and the test asserts "KB Studio") without
-  // running Vite. `pnpm studio` serves the real UI via Vite; `vite build` populates dist/.
   res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   res.end(
     "<!doctype html><meta charset=utf-8><title>KB Studio</title><h1>KB Studio</h1>" +
@@ -811,9 +657,6 @@ function serveStatic(res: ServerResponse, path: string): void {
       return;
     }
   }
-  // A request with a file extension is an ASSET (e.g. /assets/index-abc.js). If it isn't in dist/, that
-  // is a genuine 404 — NEVER fall back to index.html, or the browser receives HTML for a
-  // `<script type=module>` and dies. The SPA fallback is only for extensionless navigation routes.
   if (/\.[a-z0-9]+$/i.test(rel)) return sendJson(res, 404, { error: "not found" });
   serveHtml(res);
 }
@@ -861,61 +704,50 @@ function sendError(res: ServerResponse, err: unknown): void {
   if (err instanceof BadRequest) return sendJson(res, 400, { error: err.message });
   if (err instanceof Forbidden) return sendJson(res, 403, { error: err.message });
   if (err instanceof NotFound) return sendJson(res, 404, { error: err.message });
-  if (err instanceof Conflict) return sendJson(res, 409, { error: err.message });
   if (err instanceof ConfigError) return sendJson(res, 422, { error: err.message });
-  if (err instanceof BadGateway) return sendJson(res, 502, { error: err.message });
   process.stderr.write(`kb-studio: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
   sendJson(res, 500, { error: "internal error" });
 }
 
-// ---- entrypoint (the only place that listens) ---------------------------------------------------
+// ---- entrypoint (the only place that connects + listens) ----------------------------------------
 
-/** Build the review flow from env: needs a GitHub token + `owner/repo`. Absent → no review flow. */
-function reviewFromEnv(): ReviewConfig | undefined {
-  const token = process.env["KB_GITHUB_TOKEN"];
-  const repo = process.env["KB_GITHUB_REPO"]; // "owner/repo"
-  const [owner, name] = (repo ?? "").split("/");
-  if (!token || !owner || !name) return undefined;
-  const admins = (process.env["KB_ADMINS"] ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return {
-    forge: createGitHubForge({ token, owner, repo: name }),
-    remote: process.env["KB_REVIEW_REMOTE"] ?? "origin",
-    baseBranch: process.env["KB_REVIEW_BASE"] ?? "main",
-    admins,
-  };
+/** Parse `KB_DEV_ACTOR` ("Name <email>" or "email"), or fall back to DEFAULT_ACTOR. */
+function devActor(): Actor {
+  const raw = process.env["KB_DEV_ACTOR"]?.trim();
+  if (!raw) return DEFAULT_ACTOR;
+  const m = /^\s*(.*?)\s*<([^>]+)>\s*$/.exec(raw);
+  if (m) return { name: (m[1] ?? "").trim() || m[2] || raw, email: m[2] ?? raw };
+  return { name: raw.split("@")[0] || raw, email: raw };
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const kbDir = process.env["KB_DIR"] ?? join(process.cwd(), "kb");
-  const coverageDir = process.env["KB_COVERAGE_DIR"] ?? join(process.cwd(), "kb-coverage");
-  const port = Number(process.env["KB_STUDIO_PORT"] ?? "4319");
+  void (async (): Promise<void> => {
+    const uri = process.env["MONGODB_URI"] ?? "mongodb://127.0.0.1:27017";
+    const dbName = process.env["KB_DB_NAME"] ?? "kb_studio";
+    const kbDir = process.env["KB_DIR"] ?? join(process.cwd(), "kb");
+    const coverageDir = process.env["KB_COVERAGE_DIR"] ?? join(process.cwd(), "kb-coverage");
+    const exportDir = process.env["KB_EXPORT_DIR"] ?? kbDir;
+    const port = Number(process.env["KB_STUDIO_PORT"] ?? "4319");
+    const multiUser = process.env["KB_MULTI_USER"] === "1";
 
-  // Multi-user (branch-per-user) mode: opt in with KB_MULTI_USER=1. Needs the repo root + a worktrees dir
-  // OUTSIDE it, and MUST sit behind the SSO proxy — so it binds all interfaces (the proxy is the only gate,
-  // and the trusted identity header is honored). Single mode stays loopback-only, exactly as before.
-  const multiUser =
-    process.env["KB_MULTI_USER"] === "1"
-      ? {
-          repoDir: process.env["KB_REPO_DIR"] ?? process.cwd(),
-          worktreesDir: process.env["KB_WORKTREES_DIR"] ?? join(process.cwd(), ".kb-worktrees"),
-        }
-      : undefined;
-  const review = multiUser ? reviewFromEnv() : undefined; // review only makes sense per-user branch
-  const host = multiUser ? "0.0.0.0" : "127.0.0.1";
+    const envAdmins = (process.env["KB_ADMINS"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const dev = devActor();
+    // Multi-user seeds from KB_ADMINS; single-user (dev) seeds the dev actor so `pnpm studio` stays frictionless.
+    const seedAdmins = envAdmins.length ? envAdmins : multiUser ? [] : [dev.email];
+    const host = multiUser ? "0.0.0.0" : "127.0.0.1";
 
-  createStudioServer({
-    kbDir,
-    coverageDir,
-    ...(multiUser ? { multiUser } : {}),
-    ...(review ? { review } : {}),
-  }).listen(port, host, () => {
-    process.stdout.write(
-      `\n  KB Studio → http://${host}:${String(port)}\n` +
-        `  authoring ${kbDir}${multiUser ? `  (multi-user: worktrees in ${multiUser.worktreesDir})` : ""}` +
-        `${review ? "  (review: PRs enabled)" : ""}\n  viewing   ${coverageDir}\n\n`,
-    );
+    const db = await connectDb(uri, dbName);
+    await bootstrapKb(db, { kbDir, seedAdmins, actor: dev });
+
+    createStudioServer({ db, coverageDir, exportDir, multiUser }).listen(port, host, () => {
+      process.stdout.write(
+        `\n  KB Studio → http://${host}:${String(port)}\n` +
+          `  db        ${uri}/${dbName}${multiUser ? "  (multi-user: per-author workspaces)" : ""}\n` +
+          `  export    ${exportDir}\n  viewing   ${coverageDir}\n\n`,
+      );
+    });
+  })().catch((err: unknown) => {
+    process.stderr.write(`kb-studio: failed to start: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+    process.exit(1);
   });
 }

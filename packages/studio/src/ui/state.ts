@@ -12,6 +12,7 @@ import { slug, topicKey, TOPIC_ID_RE, type StatusBucket } from "./derive";
 import type {
   AccessPolicyView,
   AdminOverview,
+  Change,
   CoverageReportWithTree,
   CoverageSummary,
   HistoryData,
@@ -20,6 +21,7 @@ import type {
   Manifest,
   NodeInfo,
   Proposal,
+  ProposalDetail,
   Topic,
 } from "./types";
 
@@ -89,6 +91,10 @@ export interface State {
   identity: Identity | null;
   proposalsOpen: boolean;
   proposals: Proposal[] | null;
+  /** The expanded live diff per proposal id (admin review view), fetched on demand. */
+  proposalDetails: Record<string, ProposalDetail>;
+  /** Unresolved conflicts from the last sync — drives the resolution modal (null = none/closed). */
+  syncConflicts: Change[] | null;
 
   // Admin view (admins only): the access policy + an operational overview.
   access: AccessPolicyView | null;
@@ -120,6 +126,8 @@ export function initialState(): State {
     identity: null,
     proposalsOpen: false,
     proposals: null,
+    proposalDetails: {},
+    syncConflicts: null,
     access: null,
     overview: null,
     nextId: 1,
@@ -166,6 +174,10 @@ export type Action =
   | { type: "identityLoaded"; identity: Identity }
   | { type: "setProposalsOpen"; open: boolean }
   | { type: "proposalsLoaded"; proposals: Proposal[] }
+  | { type: "proposalDetailLoaded"; id: string; detail: ProposalDetail }
+  | { type: "syncConflictsLoaded"; conflicts: Change[] }
+  | { type: "resolveSyncConflict"; key: string }
+  | { type: "clearSyncConflicts" }
   // admin
   | { type: "accessLoaded"; access: AccessPolicyView }
   | { type: "overviewLoaded"; overview: AdminOverview };
@@ -414,10 +426,24 @@ export function reducer(state: State, action: Action): State {
       return { ...state, identity: action.identity };
 
     case "setProposalsOpen":
-      return { ...state, proposalsOpen: action.open, proposals: action.open ? null : state.proposals };
+      return { ...state, proposalsOpen: action.open, proposals: action.open ? null : state.proposals, proposalDetails: action.open ? {} : state.proposalDetails };
 
     case "proposalsLoaded":
       return { ...state, proposals: action.proposals };
+
+    case "proposalDetailLoaded":
+      return { ...state, proposalDetails: { ...state.proposalDetails, [action.id]: action.detail } };
+
+    case "syncConflictsLoaded":
+      return { ...state, syncConflicts: action.conflicts.length ? action.conflicts : null };
+
+    case "resolveSyncConflict": {
+      const left = (state.syncConflicts ?? []).filter((c) => c.key !== action.key);
+      return { ...state, syncConflicts: left.length ? left : null };
+    }
+
+    case "clearSyncConflicts":
+      return { ...state, syncConflicts: null };
 
     case "accessLoaded":
       return { ...state, access: action.access };

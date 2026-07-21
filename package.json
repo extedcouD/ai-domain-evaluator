@@ -12,6 +12,7 @@
     "build": "pnpm -r run build",
     "dev": "tsx packages/cli/src/cli.ts",
     "studio": "tsx packages/studio/src/dev.ts",
+    "studio:migrate": "tsx packages/studio/src/migrate.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p packages/studio/tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

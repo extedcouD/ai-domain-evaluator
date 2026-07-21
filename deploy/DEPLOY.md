@@ -1,13 +1,14 @@
 # Deploying KB Studio (multi-user) on EC2
 
 This runs KB Studio as a hosted, multi-author tool: everyone signs in with SSO, each person edits in
-their own isolated git branch, and changes reach the shared KB only through reviewed pull requests.
-Nothing is ever lost — every change is an attributed git commit, backed off-site on GitHub.
+their own isolated **workspace** (a personal copy of the KB), and changes reach the shared KB only
+through a reviewed merge. Nothing is silently lost — every change is an attributed revision in Mongo,
+with a History/Trash panel for recovery.
 
 ```
-Internet ──443──▶ Caddy (TLS) ──▶ oauth2-proxy (SSO) ──▶ studio (node) ──▶ KB git repo on EBS
-                                     injects                per-user            │
-                                 X-Forwarded-Email        git worktrees         └─▶ push / PR / merge ──▶ GitHub
+Internet ──443──▶ Caddy (TLS) ──▶ oauth2-proxy (SSO) ──▶ studio (node) ──▶ MongoDB
+                                     injects                per-author           (workspaces / topics /
+                                 X-Forwarded-Email          workspaces            config / revisions)
 ```
 
 Only Caddy is exposed to the internet. `studio` and `oauth2-proxy` sit on the internal Docker network,
@@ -17,29 +18,30 @@ so the trusted identity header cannot be spoofed from outside.
 
 ## 1. Prerequisites (before touching EC2)
 
-1. **A KB git repo on GitHub** whose **root is the KB** — i.e. it contains `manifest.meta.yaml`,
-   `topics/…`, and (optionally) `access.yaml`. If your KB currently lives in a subfolder, split it into
-   its own repo. This is the repo the server clones, branches per user, and merges into.
-2. **A GitHub OAuth App** (GitHub → Settings → Developer settings → OAuth Apps → New):
+1. **A GitHub OAuth App** (GitHub → Settings → Developer settings → OAuth Apps → New):
    - Homepage URL: `https://kb.yourcompany.com`
    - Authorization callback URL: `https://kb.yourcompany.com/oauth2/callback`
    - Note the **Client ID** and **Client Secret**.
-3. **A GitHub token** with `repo` scope (a bot account or fine-grained token is best). The *server* uses
-   it to fetch/push user branches and to open + merge PRs.
-4. **Your admin emails** (who may merge proposals) — e.g. `alice@yourcompany.com`.
+2. **Your admin emails** (seeded on first boot; they then govern access from the Admin page) — e.g.
+   `alice@yourcompany.com`.
+3. **MongoDB**. Either run a mongod on the EC2 host (the default), or let the stack run one for you
+   (the `with-mongo` compose profile). A **standalone** mongod is fine — no replica set required.
+
+GitHub is only the SSO identity provider now — there is no KB git repo, no server token, and no PRs.
 
 ## 2. Provision the EC2 instance
 
 1. Launch an instance (Ubuntu 22.04+, `t3.small` is plenty) with an **Elastic IP**.
-2. Attach (or use the root) **EBS volume** — this holds the live KB repo + worktrees. 20 GB is ample.
+2. Attach (or use the root) **EBS volume** — this holds the Mongo data directory. 20 GB is ample.
 3. **Security group**: inbound `443` (HTTPS) and `80` (only for the TLS challenge) from the internet,
-   and `22` (SSH) from your IP. **Do not** open 4180/4319 — those stay internal.
+   and `22` (SSH) from your IP. **Do not** open 4180/4319/27017 — those stay internal.
 4. **DNS**: point `kb.yourcompany.com` (an A record) at the Elastic IP.
 5. Install Docker + the compose plugin:
    ```bash
    curl -fsSL https://get.docker.com | sh
    sudo usermod -aG docker $USER && newgrp docker
    ```
+6. (If using the host's mongod) install MongoDB and ensure it listens on `127.0.0.1:27017`.
 
 ## 3. Configure and launch
 
@@ -47,68 +49,74 @@ so the trusted identity header cannot be spoofed from outside.
 git clone https://github.com/extedcouD/ai-domain-evaluator.git
 cd ai-domain-evaluator/deploy
 cp .env.example .env
-nano .env          # fill in KB_HOST, KB_GITHUB_REPO, KB_GITHUB_TOKEN, KB_ADMINS,
-                   # OAUTH_CLIENT_ID/SECRET, OAUTH_COOKIE_SECRET (openssl rand -base64 32), GITHUB_ORG
+nano .env          # fill in KB_HOST, MONGODB_URI, KB_DB_NAME, KB_ADMINS,
+                   # OAUTH_CLIENT_ID/SECRET, OAUTH_COOKIE_SECRET (openssl rand -base64 32)
 
+# Use the host's mongod (default MONGODB_URI=mongodb://host.docker.internal:27017):
 docker compose --env-file .env up -d --build
-docker compose logs -f            # watch it clone the KB repo + start; Caddy will fetch a cert
+# …or run Mongo inside the stack (set MONGODB_URI=mongodb://mongo:27017 first):
+docker compose --env-file .env --profile with-mongo up -d --build
+
+docker compose logs -f            # watch it import the seed KB on first boot; Caddy fetches a cert
 ```
+
+On first boot the server imports the YAML seed KB baked into the image (`/app/kb`) into Mongo, then
+Mongo is the source of truth. To (re)run the import by hand against your database:
+`pnpm studio:migrate` (add `--force` to overwrite a populated store).
 
 Visit `https://kb.yourcompany.com` → GitHub login → you're in.
 
 ## 4. A day in the life
 
-- **First visit** by `bob@corp.com` → the server creates a worktree on branch `user/bob-corp-com` from
-  the current `main`. Bob sees the live KB.
-- **Bob edits topics** → each save is an auto-commit to *his* branch, authored as Bob, scoped to what
-  `access.yaml` allows.
-- **Bob clicks "⇧ Review" → Submit for review** → his branch is pushed and a PR opens.
-- **An admin merges** (in GitHub or the Proposals panel). The server then fast-forwards the deployment's
-  local `main`, so everyone's next "Sync with main" and every new worktree sees the merged KB.
-- **Recover anything** from the **⟲ History** panel (per-commit log + one-click restore of deletions).
+- **First visit** by anyone → a read-only **viewer** on the shared KB (`main`). An admin grants them
+  write scopes from the **Admin** page; they become an **author**.
+- **Author edits** → on their first save the server clones `main` into a personal workspace
+  (`workspaces.<slug>`); every save is an attributed, hash-guarded write to *their* copy, scoped to what
+  the policy allows. Other authors and viewers never see it.
+- **Author clicks "⇧ Review" → Submit for review** → their workspace is flagged; the diff is computed
+  live against `main`.
+- **An admin merges** from the Proposals panel. The merge is all-or-nothing and hash-guarded; a
+  conflicting proposal is refused until the author **Syncs with main** and resolves each conflict
+  (Keep mine / Take theirs).
+- **Recover anything** from the **⟲ History** panel (revision log + one-click restore of deletions).
 
-## 5. Topic scoping (optional but recommended)
+## 5. Topic scoping
 
-Commit an `access.yaml` to the **root of the KB repo** to restrict who edits what:
+Manage access entirely from the **Admin** page (it writes the `config.access` document in Mongo):
 
-```yaml
-admins:
-  - alice@corp.com                       # full access + can merge + cascade-delete
-users:
-  bob@corp.com:   { scopes: [[ondc, protocol, foundation]] }
-  carol@corp.com: { scopes: [[ondc, protocol, domains, retail]] }
-defaults:
-  scopes: []                             # everyone else: read-only
-```
+- **Admins** — full access: write any path, edit the manifest identity, merge proposals.
+- **Users & scopes** — each user may write only within their assigned path prefixes.
+- **Default scopes** — applied to anyone else who signs in; empty (the default) means **read-only
+  viewer**.
 
-The server reads this from the **canonical `main`**, never a user's branch, so nobody can grant
-themselves scope by editing their own copy — a real change must be merged by an admin. With no
-`access.yaml`, everyone can edit everything (open mode).
+The policy is a single canonical document, never anything a user can write, so nobody can grant
+themselves scope — a change requires an admin.
 
 ## 6. Backups & durability
 
-- **Off-site backup is automatic**: `main` and every user branch live on GitHub. If the EC2 dies,
-  `docker compose up` on a fresh box re-clones and you're back — no data lost.
-- The **EBS volume** only holds the live working copies + worktrees (disposable). Optionally enable
-  scheduled EBS snapshots as belt-and-suspenders.
+- **All state is in MongoDB.** Point the Mongo data directory at the **EBS volume** and enable scheduled
+  EBS snapshots, or use `mongodump` on a cron. The revision log has a TTL (`KB_HISTORY_TTL_DAYS`,
+  default 365) so it self-prunes.
+- The studio container is **stateless** — rebuild/replace it freely without touching data.
 
 ## 7. Operations
 
-- **Update the app**: `git pull && docker compose --env-file .env up -d --build` (the KB volume is untouched).
-- **Logs**: `docker compose logs -f studio` (also prints any git push / backup warnings).
-- **Env vars the server reads** (all wired by compose): `KB_MULTI_USER`, `KB_REPO_DIR`, `KB_DIR`,
-  `KB_WORKTREES_DIR`, `KB_GITHUB_TOKEN`, `KB_GITHUB_REPO`, `KB_ADMINS`, `KB_REVIEW_REMOTE` (default
-  `origin`), `KB_REVIEW_BASE` (default `main`), `KB_IDENTITY_HEADER` (default `x-forwarded-email`).
+- **Update the app**: `git pull && docker compose --env-file .env up -d --build` (Mongo is untouched).
+- **Logs**: `docker compose logs -f studio`.
+- **Env vars the server reads** (all wired by compose): `KB_MULTI_USER`, `MONGODB_URI`, `KB_DB_NAME`,
+  `KB_DIR` (first-boot seed), `KB_ADMINS`, `KB_HISTORY_TTL_DAYS` (default 365),
+  `KB_IDENTITY_HEADER` (default `x-forwarded-email`).
 
 ## 8. Security notes
 
 - The studio trusts `X-Forwarded-Email` **only** because it is unreachable except through oauth2-proxy.
-  Never publish port 4319/4180 to the host or the internet.
-- The GitHub token grants push/merge on the KB repo — scope it to that one repo (fine-grained token) and
-  rotate it periodically.
+  Never publish port 4319/4180 (or Mongo's 27017) to the host or the internet.
+- Anyone who can sign in becomes a read-only viewer. To restrict *who can sign in* at all, add
+  `--github-org=<org>` back to the oauth2-proxy command in `docker-compose.yml`.
 
 ## 9. Single-user / local mode (for reference)
 
-Without `KB_MULTI_USER`, the server is the original single-user tool bound to `127.0.0.1` — everyone
-shares one workspace, no auth, no branches. Still gets the git safety net (History/Trash + restore) and
-optimistic-concurrency conflict detection. Run it with `pnpm studio` from the repo root.
+Without `KB_MULTI_USER`, the server binds `127.0.0.1` and everyone is one dev admin on `main` — no auth,
+no per-author workspaces. Still gets the revision safety net (History/Trash + restore) and
+optimistic-concurrency conflict detection. Run it with `pnpm studio` from the repo root (add
+`KB_MONGO_MEMORY=1` to use a throwaway in-memory Mongo, so you need no local database).

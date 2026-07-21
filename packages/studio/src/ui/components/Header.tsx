@@ -122,9 +122,9 @@ export function Header(props: {
         )}
         <span className="dateline-sep">·</span>
         <span className="dateline-right">{dateRight}</span>
-        {identity?.branch && (
+        {identity && (
           <span className="identity-chip" title={`signed in as ${identity.actor.email} (${identity.role})`}>
-            {identity.actor.name} · {identity.role} · <code>{identity.branch}</code>
+            {identity.actor.name} · {identity.role} · <code>{identity.workspace}</code>
           </span>
         )}
       </div>

@@ -27,6 +27,8 @@ import type {
   Manifest,
   NodeInfo,
   Proposal,
+  ProposalDetail,
+  SyncResult,
   Topic,
 } from "./types";
 import { AdminView, type AccessDraft } from "./components/AdminView";
@@ -428,10 +430,20 @@ export function App(): React.JSX.Element {
   };
 
   // ---- review handlers ---------------------------------------------------------------------------
-  const submitForReview = async (): Promise<void> => {
+  const submitForReview = async (note?: string): Promise<void> => {
     try {
-      const p = await post<Proposal>("/api/proposals", {});
-      toast(`opened PR #${String(p.number)} for review`);
+      await post<Proposal>("/api/proposals", note ? { note } : {});
+      toast("submitted for review");
+      await loadProposals();
+    } catch (err) {
+      toast(errMsg(err), "error");
+    }
+  };
+
+  const withdrawProposal = async (): Promise<void> => {
+    try {
+      await del("/api/proposals");
+      toast("withdrew your proposal");
       await loadProposals();
     } catch (err) {
       toast(errMsg(err), "error");
@@ -440,21 +452,50 @@ export function App(): React.JSX.Element {
 
   const syncWithMain = async (): Promise<void> => {
     try {
-      const r = await post<{ merged: boolean; conflicted: boolean }>("/api/sync", {});
-      toast(r.conflicted ? "sync hit conflicts — resolve on your branch" : "synced with main", r.conflicted ? "error" : "info");
-      if (!r.conflicted) await Promise.all([loadManifest(), loadNodes()]);
+      const r = await post<SyncResult>("/api/sync", {});
+      if (r.conflicts.length) {
+        dispatch({ type: "syncConflictsLoaded", conflicts: r.conflicts });
+        toast(`synced — ${String(r.conflicts.length)} conflict(s) to resolve`, "error");
+      } else {
+        toast(r.pulled ? `synced with main (${String(r.pulled)} update${r.pulled === 1 ? "" : "s"})` : "already up to date with main");
+      }
+      await Promise.all([loadManifest(), loadNodes()]);
     } catch (err) {
       toast(errMsg(err), "error");
     }
   };
 
-  const mergeProposal = async (n: number): Promise<void> => {
+  const resolveSyncConflict = async (key: string, choose: "mine" | "theirs"): Promise<void> => {
     try {
-      await post(`/api/proposals/${String(n)}/merge`, {});
-      toast(`merged #${String(n)}`);
-      await loadProposals();
+      await post("/api/sync/resolve", { key, choose });
+      dispatch({ type: "resolveSyncConflict", key });
+      await Promise.all([loadManifest(), loadNodes()]);
     } catch (err) {
       toast(errMsg(err), "error");
+    }
+  };
+
+  const loadProposalDetail = useCallback(async (id: string): Promise<void> => {
+    try {
+      dispatch({ type: "proposalDetailLoaded", id, detail: await get<ProposalDetail>(`/api/proposals/${encodeURIComponent(id)}`) });
+    } catch {
+      /* best-effort — the row just won't expand */
+    }
+  }, []);
+
+  const mergeProposal = async (id: string): Promise<void> => {
+    try {
+      await post(`/api/proposals/${encodeURIComponent(id)}/merge`, {});
+      toast(`merged ${id}`);
+      await Promise.all([loadProposals(), loadManifest(), loadNodes()]);
+    } catch (err) {
+      const ae = err as ApiError;
+      const b = ae.body as { conflicts?: unknown[] } | undefined;
+      if (ae.status === 409 && Array.isArray(b?.conflicts)) {
+        toast(`cannot merge — ${String(b.conflicts.length)} conflict(s); the author must sync + resolve first`, "error");
+      } else {
+        toast(errMsg(err), "error");
+      }
     }
   };
 
@@ -464,17 +505,6 @@ export function App(): React.JSX.Element {
       await put("/api/access", draft);
       toast("saved access policy");
       // Reload the policy + overview, and whoami (the caller's own role may have changed).
-      await Promise.all([loadAccess(), loadOverview(), loadWhoami()]);
-    } catch (err) {
-      toast(errMsg(err), "error");
-    }
-  };
-
-  const disableAccess = async (): Promise<void> => {
-    if (!window.confirm("Disable access control? Everyone who can sign in will be able to edit everything (open mode).")) return;
-    try {
-      await del("/api/access");
-      toast("access control disabled (open mode)");
       await Promise.all([loadAccess(), loadOverview(), loadWhoami()]);
     } catch (err) {
       toast(errMsg(err), "error");
@@ -549,7 +579,6 @@ export function App(): React.JSX.Element {
               nodes={state.nodes}
               manifest={state.manifest}
               onSaveAccess={(draft) => void saveAccess(draft)}
-              onDisableAccess={() => void disableAccess()}
               onSaveMeta={(id, version, subject, lv) => void saveMeta(id, version, subject, lv)}
               onExport={() => void exportManifest()}
             />
@@ -569,9 +598,15 @@ export function App(): React.JSX.Element {
         <ProposalsPanel
           identity={state.identity}
           proposals={state.proposals}
-          onSubmit={() => void submitForReview()}
+          details={state.proposalDetails}
+          syncConflicts={state.syncConflicts}
+          onSubmit={(note) => void submitForReview(note)}
+          onWithdraw={() => void withdrawProposal()}
           onSync={() => void syncWithMain()}
-          onMerge={(n) => void mergeProposal(n)}
+          onResolve={(key, choose) => void resolveSyncConflict(key, choose)}
+          onDismissConflicts={() => dispatch({ type: "clearSyncConflicts" })}
+          onExpand={(id) => void loadProposalDetail(id)}
+          onMerge={(id) => void mergeProposal(id)}
           onClose={() => dispatch({ type: "setProposalsOpen", open: false })}
         />
       )}
