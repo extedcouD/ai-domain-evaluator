@@ -16,7 +16,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: Number(process.env["KB_STUDIO_PORT"] ?? "4319"),
+    port: Number(process.env["KB_STUDIO_PORT"] ?? "7674"),
     // Fail loudly on a port conflict instead of silently shifting to another port.
     strictPort: true,
     proxy: {

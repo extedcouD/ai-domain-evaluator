@@ -35,7 +35,7 @@ GitHub is only the SSO identity provider now — there is no KB git repo, no ser
 1. Launch an instance (Ubuntu 22.04+, `t3.small` is plenty) with an **Elastic IP**.
 2. Attach (or use the root) **EBS volume** — this holds the Mongo data directory. 20 GB is ample.
 3. **Security group**: inbound `443` (HTTPS) and `80` (only for the TLS challenge) from the internet,
-   and `22` (SSH) from your IP. **Do not** open 4180/4319/27017 — those stay internal.
+   and `22` (SSH) from your IP. **Do not** open 4180/7674/27017 — those stay internal.
 4. **DNS**: point `kb.yourcompany.com` (an A record) at the Elastic IP.
 5. Install Docker + the compose plugin:
    ```bash
@@ -108,7 +108,7 @@ themselves scope — a change requires an admin.
 ## 8. Security notes
 
 - The studio trusts `X-Forwarded-Email` **only** because it is unreachable except through oauth2-proxy.
-  Never publish port 4319/4180 (or Mongo's 27017) to the host or the internet.
+  Never publish port 7674/4180 (or Mongo's 27017) to the host or the internet.
 - Anyone who can sign in becomes a read-only viewer. To restrict *who can sign in* at all, add
   `--github-org=<org>` back to the oauth2-proxy command in `docker-compose.yml`.
 

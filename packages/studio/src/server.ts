@@ -727,7 +727,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
     const kbDir = process.env["KB_DIR"] ?? join(process.cwd(), "kb");
     const coverageDir = process.env["KB_COVERAGE_DIR"] ?? join(process.cwd(), "kb-coverage");
     const exportDir = process.env["KB_EXPORT_DIR"] ?? kbDir;
-    const port = Number(process.env["KB_STUDIO_PORT"] ?? "4319");
+    const port = Number(process.env["KB_STUDIO_PORT"] ?? "7674");
     const multiUser = process.env["KB_MULTI_USER"] === "1";
 
     const envAdmins = (process.env["KB_ADMINS"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);

@@ -17,7 +17,7 @@ services:
       KB_ADMINS: ${KB_ADMINS} # admin emails to seed on first boot (the access policy then governs)
       KB_DIR: /app/kb # the YAML seed KB, imported into Mongo on first boot (empty-store only)
     expose:
-      - "4319" # internal only — never published to the host
+      - "7674" # internal only — never published to the host
     restart: unless-stopped
 
   # Internal MongoDB for the KB store. Its named volume survives image/container replacement.
@@ -36,7 +36,7 @@ services:
     command:
       - --http-address=0.0.0.0:4180
       - --reverse-proxy=true # trust X-Forwarded-* from Caddy in front
-      - --upstream=http://studio:4319 # proxy authenticated requests to the studio
+      - --upstream=http://studio:7674 # proxy authenticated requests to the studio
       - --provider=github # swap to `google` (+ --oidc-issuer-url) for Google Workspace
       # No --github-org restriction: anyone who can sign in becomes a read-only VIEWER by default; an
       # admin grants write scopes from the Admin page. Add --github-org=<org> to restrict who can sign in.
