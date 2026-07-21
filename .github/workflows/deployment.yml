@@ -42,9 +42,11 @@ jobs:
       - name: Select deployment directory
         run: |
           if [ "$DEPLOY_ENV" = "release-staging" ]; then
+            echo "DEPLOY_BASE_DIR=~/ONDC-automation-kb-studio-staging" >> "$GITHUB_ENV"
             echo "REPO_DIR=~/ONDC-automation-kb-studio-staging/automation-kb-studio" >> "$GITHUB_ENV"
             echo "COMPOSE_PROJECT=automation-kb-studio-staging" >> "$GITHUB_ENV"
           else
+            echo "DEPLOY_BASE_DIR=~/ONDC-automation-kb-studio" >> "$GITHUB_ENV"
             echo "REPO_DIR=~/ONDC-automation-kb-studio/automation-kb-studio" >> "$GITHUB_ENV"
             echo "COMPOSE_PROJECT=automation-kb-studio" >> "$GITHUB_ENV"
           fi
@@ -64,29 +66,40 @@ jobs:
           SSH_HOST: ${{ secrets.HOST }}
           SSH_USER: ${{ secrets.USER }}
         run: |
-          ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" \
-            "mkdir -p \"$(dirname \"$REPO_DIR\")\" && rm -rf \"$REPO_DIR\" && git clone --single-branch --branch \"$DEPLOY_ENV\" \"${{ github.server_url }}/${{ github.repository }}.git\" \"$REPO_DIR\""
+          ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" -T <<EOF
+          BASE_DIR=$DEPLOY_BASE_DIR
+          REPO_DIR=$REPO_DIR
+          mkdir -p \$BASE_DIR
+          rm -rf \$REPO_DIR
+          git clone --single-branch --branch $DEPLOY_ENV ${{ github.server_url }}/${{ github.repository }}.git \$REPO_DIR
+          EOF
 
       - name: Write deployment environment file
         env:
           SSH_HOST: ${{ secrets.HOST }}
           SSH_USER: ${{ secrets.USER }}
         run: |
-          ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" "mkdir -p \"$REPO_DIR/deploy\""
-          {
-            printf 'KB_HOST=%s\n' "$KB_HOST"
-            printf 'MONGODB_URI=%s\n' "$MONGODB_URI"
-            printf 'KB_DB_NAME=%s\n' "$KB_DB_NAME"
-            printf 'KB_ADMINS=%s\n' "$KB_ADMINS"
-            printf 'OAUTH_CLIENT_ID=%s\n' "$OAUTH_CLIENT_ID"
-            printf 'OAUTH_CLIENT_SECRET=%s\n' "$OAUTH_CLIENT_SECRET"
-            printf 'OAUTH_COOKIE_SECRET=%s\n' "$OAUTH_COOKIE_SECRET"
-          } | base64 --wrap=0 | ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" "base64 --decode > \"$REPO_DIR/deploy/.env\" && chmod 600 \"$REPO_DIR/deploy/.env\""
+          ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" -T <<EOF
+          REPO_DIR=$REPO_DIR
+          mkdir -p \$REPO_DIR/deploy
+          : > \$REPO_DIR/deploy/.env
+          echo "KB_HOST=$KB_HOST" >> \$REPO_DIR/deploy/.env
+          echo "MONGODB_URI=$MONGODB_URI" >> \$REPO_DIR/deploy/.env
+          echo "KB_DB_NAME=$KB_DB_NAME" >> \$REPO_DIR/deploy/.env
+          echo "KB_ADMINS=$KB_ADMINS" >> \$REPO_DIR/deploy/.env
+          echo "OAUTH_CLIENT_ID=$OAUTH_CLIENT_ID" >> \$REPO_DIR/deploy/.env
+          echo "OAUTH_CLIENT_SECRET=$OAUTH_CLIENT_SECRET" >> \$REPO_DIR/deploy/.env
+          echo "OAUTH_COOKIE_SECRET=$OAUTH_COOKIE_SECRET" >> \$REPO_DIR/deploy/.env
+          chmod 600 \$REPO_DIR/deploy/.env
+          EOF
 
       - name: Deploy with Docker Compose
         env:
           SSH_HOST: ${{ secrets.HOST }}
           SSH_USER: ${{ secrets.USER }}
         run: |
-          ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" \
-            "cd \"$REPO_DIR/deploy\" && sudo docker compose --project-name \"$COMPOSE_PROJECT\" --env-file .env up -d --build --remove-orphans"
+          ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" -T <<EOF
+          REPO_DIR=$REPO_DIR
+          cd \$REPO_DIR/deploy
+          sudo docker compose --project-name $COMPOSE_PROJECT --env-file .env up -d --build --remove-orphans
+          EOF
