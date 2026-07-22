@@ -31,6 +31,7 @@ import type {
   NodeInfo,
   Proposal,
   ProposalDetail,
+  ResumeRequest,
   RunRequest,
   SyncResult,
   Topic,
@@ -58,6 +59,7 @@ export function App(): React.JSX.Element {
   const inflight = useRef(new Set<string>());
   const evalInflight = useRef(new Set<string>());
   const [submittingRun, setSubmittingRun] = useState(false);
+  const [resumingRun, setResumingRun] = useState(false);
 
   // ---- loaders -----------------------------------------------------------------------------------
   const loadManifest = useCallback(async () => {
@@ -148,6 +150,35 @@ export function App(): React.JSX.Element {
         await Promise.all([loadEvalRuns(), loadEvalRun(id)]);
       } catch (err) {
         dispatch({ type: "toast", message: errMsg(err), kind: "error" });
+      }
+    },
+    [toast, loadEvalRuns, loadEvalRun],
+  );
+
+  const pauseEvalRun = useCallback(
+    async (id: string): Promise<void> => {
+      try {
+        await post(`/api/runs/${encodeURIComponent(id)}/pause`, {});
+        toast("run paused");
+        await Promise.all([loadEvalRuns(), loadEvalRun(id)]);
+      } catch (err) {
+        dispatch({ type: "toast", message: errMsg(err), kind: "error" });
+      }
+    },
+    [toast, loadEvalRuns, loadEvalRun],
+  );
+
+  const resumeEvalRun = useCallback(
+    async (id: string, req: ResumeRequest): Promise<void> => {
+      setResumingRun(true);
+      try {
+        await post(`/api/runs/${encodeURIComponent(id)}/resume`, req);
+        toast("run resumed");
+        await Promise.all([loadEvalRuns(), loadEvalRun(id)]);
+      } catch (err) {
+        dispatch({ type: "toast", message: errMsg(err), kind: "error" });
+      } finally {
+        setResumingRun(false);
       }
     },
     [toast, loadEvalRuns, loadEvalRun],
@@ -262,7 +293,7 @@ export function App(): React.JSX.Element {
       void loadEvalRuns();
       const sel = state.evalSelected;
       if (sel && state.evalRuns.find((r) => r.id === sel)?.status === "running") void loadEvalRun(sel);
-    }, 2500);
+    }, 1500);
     return () => window.clearInterval(id);
   }, [state.view, state.evalRuns, state.evalSelected, loadEvalRuns, loadEvalRun]);
 
@@ -706,9 +737,14 @@ export function App(): React.JSX.Element {
               selected={state.evalSelected}
               details={state.evalDetails}
               levels={state.manifest?.levels ?? []}
+              topics={state.manifest?.topics ?? []}
+              nodes={state.nodes}
               submitting={submittingRun}
+              resuming={resumingRun}
               onSubmit={(req) => void submitRun(req)}
+              onPause={(id) => void pauseEvalRun(id)}
               onCancel={(id) => void cancelEvalRun(id)}
+              onResume={(id, req) => void resumeEvalRun(id, req)}
               dispatch={dispatch}
             />
           </main>

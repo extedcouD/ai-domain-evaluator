@@ -141,7 +141,12 @@ export interface RevisionDoc {
 
 export type EvalProvider = "openai" | "anthropic";
 
-export type EvalRunStatus = "running" | "succeeded" | "failed" | "canceled";
+export type EvalRunStatus = "running" | "paused" | "interrupted" | "succeeded" | "failed" | "canceled";
+
+/** Which topics a run covers. `topicKeys: null` = the whole KB; otherwise the explicit `topicKey` set. */
+export interface EvalScope {
+  topicKeys: string[] | null;
+}
 
 /** The NON-SECRET echo of a run's transport config. The API key is deliberately absent — see EvalRunDoc. */
 export interface EvalEndpoint {
@@ -149,6 +154,32 @@ export interface EvalEndpoint {
   baseUrl: string;
   model: string;
 }
+
+/** The topic a run is interrogating right now (from a `topic.probe` event), or null between topics. */
+export interface RunCurrent {
+  index: number;
+  id: string;
+  kind: TopicKind;
+  title: string;
+}
+
+/** One resolved topic in a run's live activity log (from a `topic.result` event). */
+export interface RunLogEntry {
+  seq: number;
+  at: number;
+  index: number;
+  id: string;
+  kind: TopicKind;
+  title: string;
+  path: string[];
+  status: string;
+  agreement: number;
+  sample: string;
+  detail: string;
+}
+
+/** How many activity-log entries a run doc retains (a scrolling live feed; the full report is authoritative). */
+export const RUN_LOG_CAP = 5000;
 
 /**
  * One coverage evaluation a user kicked off from the dashboard: a probe of a user-supplied endpoint
@@ -166,9 +197,11 @@ export interface EvalRunDoc {
   manifestId: string;
   manifestVersion: string;
   status: EvalRunStatus;
+  scope: EvalScope; // which topics this run covers (persisted so a resume reproduces the same subset)
   source: EvalEndpoint;
   judge: EvalEndpoint;
-  progress: { done: number; total: number };
+  progress: { done: number; total: number; current: RunCurrent | null };
+  log: RunLogEntry[]; // live activity feed (capped at RUN_LOG_CAP); each topic as it resolves
   report: CoverageReport | null; // embedded on success
   error: SerializedError | null; // set on failure
   createdAt: Date;

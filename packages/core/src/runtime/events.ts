@@ -78,6 +78,29 @@ export type EventBody =
   | { type: "budget.exhausted"; callId: string; reasoningChars: number; maxTokens: number }
 
   /** The engine cannot print. When it has something to say anyway, it says it here. */
-  | { type: "notice"; level: "info" | "warn"; message: string };
+  | { type: "notice"; level: "info" | "warn"; message: string }
+
+  // ---- coverage per-topic telemetry ------------------------------------------------------------
+  /**
+   * A coverage probe is ABOUT to interrogate this topic. Emitted before any model call for it, so a
+   * live front-end can show what is in flight during the (multi-call) gap before its result lands.
+   * `status` is a bare string here, not the operations-layer `TopicStatus`: runtime is the base layer
+   * and cannot import up into operations, and an event crosses a serialization boundary as data anyway.
+   */
+  | { type: "topic.probe"; index: number; total: number; id: string; kind: "real" | "canary"; title: string; path: string[] }
+  /** A coverage topic finished classifying — the structured result, streamed the moment it is known. */
+  | {
+      type: "topic.result";
+      index: number;
+      total: number;
+      id: string;
+      kind: "real" | "canary";
+      title: string;
+      path: string[];
+      status: string;
+      agreement: number;
+      sample: string;
+      detail: string;
+    };
 
 export type HarnessEvent = EventEnvelope & EventBody;

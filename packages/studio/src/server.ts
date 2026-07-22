@@ -36,7 +36,7 @@ import {
 import { countPending, getRequest, listPending, pendingFor, resolveRequest, submitRequest } from "./access-requests";
 import { readPolicy, seedPolicy, writePolicy } from "./access-store";
 import { DEFAULT_ACTOR, makeActorResolver, type Actor } from "./actor";
-import { connectDb, ensureIndexes, type DbHandle, type EvalRunDoc, type TopicSnapshot, type WorkspaceMeta } from "./db";
+import { connectDb, ensureIndexes, type DbHandle, type EvalRunDoc, type EvalScope, type TopicSnapshot, type WorkspaceMeta } from "./db";
 import { appendRevision, getRevision, listDeletions, listHistory } from "./history";
 import type { EndpointConfig } from "./llm-factory";
 import { declaredLevels, parseTopic, renderManifestYaml, SEGMENT_RE, TOPIC_ID_RE } from "./manifest-folder";
@@ -219,6 +219,7 @@ async function handleKb(req: IncomingMessage, res: ServerResponse, ctx: Ctx, met
   // Eval runs — kick off a coverage probe against a user-supplied endpoint and read the results back.
   if (method === "POST" && path === "/api/runs") return await postRun(req, res, ctx);
   if (method === "GET" && path === "/api/runs") return await getRuns(req, res, ctx);
+  if (method === "POST" && path.startsWith("/api/runs/")) return await postRunAction(req, res, ctx, path);
   if (method === "GET" && path.startsWith("/api/runs/")) return await getRun(req, res, ctx, path);
   if (method === "DELETE" && path.startsWith("/api/runs/")) return await deleteRun(req, res, ctx, path);
 
@@ -764,6 +765,13 @@ function parseEndpoint(raw: unknown, label: string): EndpointConfig {
   return cfg;
 }
 
+/** Validate the optional topic-scope: an array of `topicKey` strings, or null/absent = the whole KB. */
+function parseScope(raw: unknown): EvalScope {
+  if (raw === undefined || raw === null) return { topicKeys: null };
+  if (!Array.isArray(raw) || !raw.every((k) => typeof k === "string")) throw new BadRequest("topicKeys must be an array of strings or null");
+  return { topicKeys: raw };
+}
+
 /** A run doc as the dashboard lists it: identity, status, progress, and headline numbers — never the report body or a key. */
 function runSummary(d: EvalRunDoc): Record<string, unknown> {
   return {
@@ -774,6 +782,7 @@ function runSummary(d: EvalRunDoc): Record<string, unknown> {
     subject: d.subject,
     manifestId: d.manifestId,
     manifestVersion: d.manifestVersion,
+    scope: d.scope,
     source: d.source,
     judge: d.judge,
     progress: d.progress,
@@ -790,14 +799,45 @@ async function postRun(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Pro
   const body = await readBody(req);
   const source = parseEndpoint(body["source"], "source");
   const judge = parseEndpoint(body["judge"], "judge");
+  const scope = parseScope(body["topicKeys"]);
   // The run probes the KB as THIS user sees it in Studio (an author's own copy, or main).
   const { actor, ws } = await resolveRead(ctx, req);
   try {
-    const id = await ctx.runner.start({ actor: actor.email, workspace: ws, source, judge });
+    const id = await ctx.runner.start({ actor: actor.email, workspace: ws, scope, source, judge });
     sendJson(res, 202, { id, status: "running" });
   } catch (err) {
     if (err instanceof TooManyRuns) return sendJson(res, 429, { error: err.message });
-    throw err; // ConfigError (empty/invalid KB) → 422 via sendError
+    throw err; // ConfigError (empty/invalid KB, empty scope) → 422 via sendError
+  }
+}
+
+/** `POST /api/runs/:id/pause` and `/resume` — owner-or-admin. Resume re-supplies the (never-stored) keys. */
+async function postRunAction(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const segs = refSegments(path, "/api/runs/");
+  const id = segs[0];
+  const action = segs[1];
+  if (!id || (action !== "pause" && action !== "resume")) throw new BadRequest("bad run action");
+  const { actor, policy } = await resolveRead(ctx, req);
+  const doc = await ctx.db.evalRuns.findOne({ _id: id });
+  if (!doc) throw new NotFound("no such run");
+  if (doc.actor !== actor.email && !isAccessAdmin(policy, actor.email)) throw new Forbidden("this run belongs to someone else");
+
+  if (action === "pause") {
+    const paused = ctx.runner.pause(id);
+    return sendJson(res, 200, { ok: true, status: paused ? "paused" : doc.status });
+  }
+
+  // resume — only a paused/interrupted run, and only with fresh keys (they were never stored).
+  if (doc.status !== "paused" && doc.status !== "interrupted") throw new BadRequest("this run is not paused — nothing to resume");
+  const body = await readBody(req);
+  const source = parseEndpoint(body["source"], "source");
+  const judge = parseEndpoint(body["judge"], "judge");
+  try {
+    await ctx.runner.resume({ doc, actor: actor.email, source, judge });
+    sendJson(res, 202, { id, status: "running" });
+  } catch (err) {
+    if (err instanceof TooManyRuns) return sendJson(res, 429, { error: err.message });
+    throw err; // ConfigError (scope now empty) → 422
   }
 }
 
@@ -817,9 +857,9 @@ async function getRun(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path:
   if (!doc) throw new NotFound("no such run");
   if (doc.actor !== actor.email && !isAccessAdmin(policy, actor.email)) throw new Forbidden("this run belongs to someone else");
   // On success, attach the per-level rollup + a generatedAt, so the client feeds the exact same shape
-  // the file-based viewer renders (see getCoverage).
+  // the file-based viewer renders (see getCoverage). The live `log` drives the running view's feed.
   const report = doc.report ? { ...doc.report, generatedAt: doc.finishedAt?.toISOString() ?? "", tree: rollup(doc.report).root } : null;
-  sendJson(res, 200, { ...runSummary(doc), report });
+  sendJson(res, 200, { ...runSummary(doc), log: doc.log, report });
 }
 
 async function deleteRun(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {

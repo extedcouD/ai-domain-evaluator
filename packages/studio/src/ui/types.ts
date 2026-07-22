@@ -103,7 +103,12 @@ export interface NodeInfo {
 // ---- eval runs (running a coverage probe from the dashboard) -------------------------------------
 
 export type EvalProvider = "openai" | "anthropic";
-export type EvalRunStatus = "running" | "succeeded" | "failed" | "canceled";
+export type EvalRunStatus = "running" | "paused" | "interrupted" | "succeeded" | "failed" | "canceled";
+
+/** Which topics a run covers. `topicKeys: null` = the whole KB. */
+export interface EvalScope {
+  topicKeys: string[] | null;
+}
 
 /** The non-secret echo of a run's transport config (no API key ever crosses the wire back). */
 export interface EvalEndpoint {
@@ -118,7 +123,30 @@ export interface RunError {
   message: string;
 }
 
-/** A run as the list endpoint returns it — status, progress, headline numbers, but no report body. */
+/** The topic a run is interrogating right now, or null between topics / when finished. */
+export interface RunCurrent {
+  index: number;
+  id: string;
+  kind: Kind;
+  title: string;
+}
+
+/** One resolved topic in a run's live activity feed. */
+export interface RunLogEntry {
+  seq: number;
+  at: number;
+  index: number;
+  id: string;
+  kind: Kind;
+  title: string;
+  path: string[];
+  status: TopicStatus;
+  agreement: number;
+  sample: string;
+  detail: string;
+}
+
+/** A run as the list endpoint returns it — status, progress, headline numbers, but no report/log body. */
 export interface EvalRunSummary {
   id: string;
   actor: string;
@@ -127,9 +155,10 @@ export interface EvalRunSummary {
   subject: string;
   manifestId: string;
   manifestVersion: string;
+  scope: EvalScope;
   source: EvalEndpoint;
   judge: EvalEndpoint;
-  progress: { done: number; total: number };
+  progress: { done: number; total: number; current: RunCurrent | null };
   totals: Totals | null;
   metrics: Metrics | null;
   error: RunError | null;
@@ -138,13 +167,22 @@ export interface EvalRunSummary {
   finishedAt: string | null;
 }
 
-/** `GET /api/runs/<id>` — a summary plus the embedded report (with its per-level `tree`) once finished. */
+/** `GET /api/runs/<id>` — a summary plus the live activity feed and, once finished, the embedded report. */
 export interface EvalRunDetail extends EvalRunSummary {
+  log: RunLogEntry[];
   report: CoverageReportWithTree | null;
 }
 
 /** The payload `POST /api/runs` accepts. `apiKey`s are sent once and never stored server-side. */
 export interface RunRequest {
+  source: EvalEndpoint & { apiKey: string; temperature?: number };
+  judge: EvalEndpoint & { apiKey: string; temperature?: number };
+  /** The topics to cover: an explicit `topicKey` list, or null for the whole KB. */
+  topicKeys: string[] | null;
+}
+
+/** The payload `POST /api/runs/:id/resume` accepts — fresh keys for the same run (scope is fixed). */
+export interface ResumeRequest {
   source: EvalEndpoint & { apiKey: string; temperature?: number };
   judge: EvalEndpoint & { apiKey: string; temperature?: number };
 }

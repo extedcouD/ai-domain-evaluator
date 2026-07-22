@@ -76,6 +76,14 @@ export interface CoverageOptions {
   sampleChars?: number;
   /** Label for the source in the report. Default "source". */
   sourceLabel?: string;
+  /**
+   * Results for topics already classified in a PRIOR run — the resume seam. A topic whose `key`
+   * appears here is not re-probed; its prior result is folded straight into the report. Because
+   * coverage is per-topic-independent, this makes a run resumable at topic granularity: a front-end
+   * that checkpoints each `topic.result` can restart over the same manifest and only pay for what's
+   * left. Results whose topic is no longer in the manifest are ignored.
+   */
+  priorResults?: readonly TopicResult[];
 }
 
 const REFUSED_VERDICT: AnswerVerdict = {
@@ -106,8 +114,26 @@ async function* coverageOp(
   const paraphrases = Math.max(1, opts.paraphrases ?? 3);
   const sampleChars = opts.sampleChars ?? 240;
   const results: TopicResult[] = [];
+  const total = manifest.topics.length;
+  // Resume: topics already classified are folded in without a re-probe. Keyed by `topicKey`.
+  const done = new Map((opts.priorResults ?? []).map((r) => [r.key, r] as const));
 
-  for (const topic of manifest.topics) {
+  // Explicit index (not a for..of counter) so it still advances for skipped topics — keeping the
+  // `index` on every topic.probe/result aligned with the topic's position in the manifest.
+  for (let index = 0; index < manifest.topics.length; index++) {
+    const topic = manifest.topics[index];
+    if (topic === undefined) continue;
+
+    const prior = done.get(topicKey(topic));
+    if (prior !== undefined) {
+      results.push(prior); // already probed in an earlier run — fold it in, don't re-ask the source
+      continue;
+    }
+
+    // Announce the in-flight topic BEFORE its (several) model calls, so a live view isn't a dead bar
+    // during the gap between one result and the next.
+    yield { type: "topic.probe", index, total, id: topic.id, kind: topic.kind, title: topic.title, path: topic.path };
+
     const questions = topic.questions.slice(0, paraphrases);
     const probes: { question: string; answer: KnowledgeAnswer }[] = [];
     for (const question of questions) {
@@ -117,6 +143,20 @@ async function* coverageOp(
     const result = await classifyTopic(judge, topic, probes, sampleChars, signal);
     results.push(result);
 
+    // The structured result (for programmatic live consumers) and the human notice line (for the CLI).
+    yield {
+      type: "topic.result",
+      index,
+      total,
+      id: topic.id,
+      kind: topic.kind,
+      title: topic.title,
+      path: topic.path,
+      status: result.status,
+      agreement: result.agreement,
+      sample: result.sample,
+      detail: result.detail,
+    };
     yield {
       type: "notice",
       level: result.status === "grounded" || result.status === "canary-ok" ? "info" : "warn",

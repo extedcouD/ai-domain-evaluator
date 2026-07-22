@@ -134,4 +134,28 @@ describe("coverage", () => {
       expect(titles.includes(ctx)).toBe(false);
     }
   });
+
+  it("resumes: folds in priorResults without re-probing those topics, and returns a full report", async () => {
+    const full = await run(honestSource(canaryQuestions));
+    const prior = full.topics.filter((t) => t.id === "search"); // pretend 'search' was done in an earlier run
+    const skipQs = new Set(manifest.topics.find((t) => t.id === "search")?.questions);
+
+    const base = honestSource(canaryQuestions);
+    const asked: string[] = [];
+    const recording: KnowledgeSource = {
+      answer: (q, signal) => {
+        asked.push(q);
+        return base.answer(q, signal);
+      },
+    };
+
+    const report = await coverage(recording, fakeJudge(), manifest, { paraphrases: 2, priorResults: prior }).result;
+
+    // 'search' was folded straight in — the source was never re-asked its questions...
+    expect([...skipQs].some((q) => asked.includes(q))).toBe(false);
+    // ...but the other topics WERE probed, and the report still covers the whole manifest.
+    expect(asked.length).toBeGreaterThan(0);
+    expect(report.topics).toHaveLength(manifest.topics.length);
+    expect(report.topics.find((t) => t.id === "search")?.status).toBe(prior[0]?.status);
+  });
 });
