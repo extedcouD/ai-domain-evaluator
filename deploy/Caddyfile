@@ -1,5 +1,5 @@
-# Caddy terminates TLS (automatic Let's Encrypt) and forwards everything to oauth2-proxy, which handles
-# login and proxies authenticated requests on to the studio. KB_HOST is injected from the environment.
-{$KB_HOST} {
+# Nginx terminates TLS on the EC2's public 80/443 ports and proxies to Caddy on port 7674. Caddy forwards
+# requests to oauth2-proxy, which handles login and proxies authenticated requests on to the studio.
+http://{$KB_HOST} {
 	reverse_proxy auth:4180
 }

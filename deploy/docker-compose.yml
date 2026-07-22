@@ -1,13 +1,10 @@
-# KB Studio — production stack: Caddy (TLS) -> oauth2-proxy (SSO) -> studio (node) -> MongoDB.
+# KB Studio — production stack: Nginx (TLS) -> Caddy -> oauth2-proxy (SSO) -> studio (node) -> MongoDB.
 #
-# Trust boundary: ONLY Caddy publishes ports (80/443). `studio` and `auth` are reachable only on the
-# internal Docker network, so the trusted identity header can't be spoofed from outside. Run from this
-# directory: `docker compose --env-file .env up -d --build`.
+# Nginx owns the EC2's public ports 80/443 and proxies this stack through port 7674. `studio` and `auth`
+# are reachable only on the internal Docker network, so the trusted identity header can't be spoofed from
+# outside. Run from this directory: `docker compose --env-file .env up -d --build`.
 #
-# Mongo: by default the studio talks to a mongod already running on the EC2 host (via host.docker.internal).
-# To run Mongo inside the stack instead, add the `with-mongo` profile:
-#   docker compose --env-file .env --profile with-mongo up -d --build
-# and set MONGODB_URI=mongodb://mongo:27017 in `.env`.
+# MongoDB runs inside this stack and persists in the named `mongo-data` volume.
 services:
   studio:
     build:
@@ -15,23 +12,19 @@ services:
       dockerfile: deploy/Dockerfile
     environment:
       KB_MULTI_USER: "1"
-      MONGODB_URI: ${MONGODB_URI:-mongodb://host.docker.internal:27017} # the KB store (Mongo)
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017} # the internal KB store
       KB_DB_NAME: ${KB_DB_NAME:-kb_studio}
       KB_ADMINS: ${KB_ADMINS} # admin emails to seed on first boot (the access policy then governs)
       KB_DIR: /app/kb # the YAML seed KB, imported into Mongo on first boot (empty-store only)
-    # Reach a mongod running on the EC2 host from inside the container.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     expose:
-      - "4319" # internal only — never published to the host
+      - "7674" # internal only — never published to the host
     restart: unless-stopped
 
-  # Optional: run Mongo inside the stack (profile `with-mongo`). Otherwise use the host's mongod.
+  # Internal MongoDB for the KB store. Its named volume survives image/container replacement.
   mongo:
     image: mongo:7
-    profiles: ["with-mongo"]
     volumes:
-      - mongo-data:/data/db # the durable KB store — put this on a durable EBS volume
+      - mongo-data:/data/db # place Docker data on durable EBS storage
     expose:
       - "27017"
     restart: unless-stopped
@@ -43,7 +36,7 @@ services:
     command:
       - --http-address=0.0.0.0:4180
       - --reverse-proxy=true # trust X-Forwarded-* from Caddy in front
-      - --upstream=http://studio:4319 # proxy authenticated requests to the studio
+      - --upstream=http://studio:7674 # proxy authenticated requests to the studio
       - --provider=github # swap to `google` (+ --oidc-issuer-url) for Google Workspace
       # No --github-org restriction: anyone who can sign in becomes a read-only VIEWER by default; an
       # admin grants write scopes from the Admin page. Add --github-org=<org> to restrict who can sign in.
@@ -65,8 +58,7 @@ services:
     depends_on:
       - auth
     ports:
-      - "80:80" # ACME HTTP challenge
-      - "443:443" # HTTPS — the only public entrypoint
+      - "7674:80" # Nginx proxies to this application port; host ports 80/443 remain available to Nginx
     environment:
       KB_HOST: ${KB_HOST}
     volumes:

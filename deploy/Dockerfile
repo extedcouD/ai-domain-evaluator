@@ -18,6 +18,6 @@ RUN pnpm install --frozen-lockfile \
  && pnpm --filter @evaluator/studio build   # vite build -> packages/studio/dist (served by the API)
 
 ENV KB_MULTI_USER=1 \
-    KB_STUDIO_PORT=4319
-EXPOSE 4319
+    KB_STUDIO_PORT=7674
+EXPOSE 7674
 ENTRYPOINT ["/app/deploy/entrypoint.sh"]

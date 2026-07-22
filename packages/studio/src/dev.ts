@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const exportDir = process.env["KB_EXPORT_DIR"] ?? kbDir;
   const dbName = process.env["KB_DB_NAME"] ?? "kb_studio";
   const apiPort = Number(process.env["KB_API_PORT"] ?? "4318");
-  const uiPort = Number(process.env["KB_STUDIO_PORT"] ?? "4319");
+  const uiPort = Number(process.env["KB_STUDIO_PORT"] ?? "7674");
   const multiUser = process.env["KB_MULTI_USER"] === "1";
   const envAdmins = (process.env["KB_ADMINS"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 

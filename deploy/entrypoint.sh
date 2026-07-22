@@ -4,7 +4,7 @@
 set -eu
 
 : "${KB_DIR:=/app/kb}"          # the YAML seed KB baked into the image (imported once, empty-store only)
-: "${MONGODB_URI:=mongodb://host.docker.internal:27017}"
+: "${MONGODB_URI:=mongodb://mongo:27017}"
 : "${KB_DB_NAME:=kb_studio}"
 export KB_DIR MONGODB_URI KB_DB_NAME
 
