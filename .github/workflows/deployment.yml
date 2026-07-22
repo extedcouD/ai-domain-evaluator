@@ -81,12 +81,16 @@ jobs:
           SSH_HOST: ${{ secrets.HOST }}
           SSH_USER: ${{ secrets.USER }}
         run: |
+          # oauth2-proxy's endpoints must sit under the app's sub-path (root host → /oauth2).
+          BASE="${KB_BASE_PATH:-/}"
+          if [ "$BASE" = "/" ]; then OAUTH_PROXY_PREFIX=/oauth2; else OAUTH_PROXY_PREFIX="${BASE%/}/oauth2"; fi
           ssh -i "$RUNNER_TEMP/kb-studio.pem" "$SSH_USER@$SSH_HOST" -T <<EOF
           REPO_DIR=$REPO_DIR
           mkdir -p \$REPO_DIR/deploy
           : > \$REPO_DIR/deploy/.env
           echo "KB_HOST=$KB_HOST" >> \$REPO_DIR/deploy/.env
           echo "KB_BASE_PATH=${KB_BASE_PATH:-/}" >> \$REPO_DIR/deploy/.env
+          echo "OAUTH_PROXY_PREFIX=$OAUTH_PROXY_PREFIX" >> \$REPO_DIR/deploy/.env
           echo "MONGODB_URI=$MONGODB_URI" >> \$REPO_DIR/deploy/.env
           echo "KB_DB_NAME=$KB_DB_NAME" >> \$REPO_DIR/deploy/.env
           echo "KB_ADMINS=$KB_ADMINS" >> \$REPO_DIR/deploy/.env

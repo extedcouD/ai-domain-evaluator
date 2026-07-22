@@ -49,11 +49,16 @@ services:
       - --cookie-secure=true
       - --pass-user-headers=true # injects X-Forwarded-Email / X-Forwarded-User to the studio
       - --set-xauthrequest=true
+      # Sub-path hosting: oauth2-proxy's own endpoints (sign_in/callback) must live under the app's mount
+      # (e.g. /kb-studio/oauth2), else its redirects escape to the domain root. Root hosting → /oauth2.
+      - --proxy-prefix=${OAUTH_PROXY_PREFIX:-/oauth2}
+      - --cookie-path=${KB_BASE_PATH:-/} # scope the session cookie to the app (the root host has another app)
     environment:
       OAUTH2_PROXY_CLIENT_ID: ${OAUTH_CLIENT_ID}
       OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET}
       OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET} # 32 bytes: `openssl rand -base64 32`
-      OAUTH2_PROXY_REDIRECT_URL: https://${KB_HOST}/oauth2/callback
+      # Callback path must equal proxy-prefix + /callback, on the public host.
+      OAUTH2_PROXY_REDIRECT_URL: https://${KB_HOST}${OAUTH_PROXY_PREFIX:-/oauth2}/callback
     expose:
       - "4180"
     restart: unless-stopped
@@ -64,8 +69,6 @@ services:
       - auth
     ports:
       - "7674:80" # Nginx proxies to this application port; host ports 80/443 remain available to Nginx
-    environment:
-      KB_HOST: ${KB_HOST}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

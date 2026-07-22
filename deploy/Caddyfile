@@ -1,5 +1,17 @@
-# Nginx terminates TLS on the EC2's public 80/443 ports and proxies to Caddy on port 7674. Caddy forwards
-# requests to oauth2-proxy, which handles login and proxies authenticated requests on to the studio.
-http://{$KB_HOST} {
+# The ONDC Nginx terminates TLS on the public host and proxies /kb-studio/ to this Caddy on port 7674.
+# Caddy just forwards to oauth2-proxy (which handles login, then proxies on to the studio).
+#
+# Match ANY host (:80), NOT a fixed http://{$KB_HOST}: Nginx already does host routing + TLS, and a
+# hard-coded host that doesn't match the forwarded Host header makes Caddy answer every request with an
+# empty 200 (a silent blank page). `trusted_proxies private_ranges` tells Caddy to honour the
+# X-Forwarded-Proto/For that Nginx sets, so oauth2-proxy sees the original https scheme (not Caddy's
+# internal http hop) and builds correct redirect + cookie behaviour.
+{
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:80 {
 	reverse_proxy auth:4180
 }
