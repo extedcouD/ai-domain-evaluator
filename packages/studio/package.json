@@ -15,6 +15,8 @@
   },
   "dependencies": {
     "@evaluator/core": "workspace:*",
+    "@evaluator/provider-anthropic": "workspace:*",
+    "@evaluator/provider-openai": "workspace:*",
     "async-mutex": "^0.5.0",
     "mongodb": "^6.12.0",
     "react": "^19.2.0",

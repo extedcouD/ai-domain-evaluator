@@ -16,6 +16,8 @@ import type {
   Change,
   CoverageReportWithTree,
   CoverageSummary,
+  EvalRunDetail,
+  EvalRunSummary,
   HistoryData,
   Identity,
   Kind,
@@ -26,7 +28,7 @@ import type {
   Topic,
 } from "./types";
 
-export type View = "author" | "coverage" | "admin";
+export type View = "author" | "coverage" | "evaluate" | "admin";
 
 /** The topic editor's working copy. Several can be open at once (keyed by `eid` in `State.editors`),
  *  each autosaving independently. `original` is the identity currently on disk — null for a brand-new
@@ -81,6 +83,11 @@ export interface State {
   runA: string | null; // file
   runB: string | null; // file (compare) or null
 
+  // Evaluate view: the user's eval runs, the selected one, and its loaded detail (incl. report).
+  evalRuns: EvalRunSummary[];
+  evalSelected: string | null; // run id
+  evalDetails: Record<string, EvalRunDetail>;
+
   toast: Toast | null;
   theme: "light" | "dark" | null; // null === follow the system
 
@@ -125,6 +132,9 @@ export function initialState(): State {
     editors: {},
     runA: null,
     runB: null,
+    evalRuns: [],
+    evalSelected: null,
+    evalDetails: {},
     toast: null,
     theme: null,
     historyOpen: false,
@@ -171,6 +181,10 @@ export type Action =
   | { type: "closeEditor"; eid: string }
   // coverage
   | { type: "selectRun"; slot: "a" | "b"; file: string | null }
+  // evaluate
+  | { type: "evalRunsLoaded"; runs: EvalRunSummary[] }
+  | { type: "selectEvalRun"; id: string | null }
+  | { type: "evalRunLoaded"; detail: EvalRunDetail }
   // chrome
   | { type: "toast"; message: string; kind: "info" | "error" }
   | { type: "dismissToast" }
@@ -416,6 +430,18 @@ export function reducer(state: State, action: Action): State {
 
     case "selectRun":
       return action.slot === "a" ? { ...state, runA: action.file } : { ...state, runB: action.file };
+
+    case "evalRunsLoaded": {
+      // Keep the current selection if it still exists; otherwise default to the newest run.
+      const selected = state.evalSelected && action.runs.some((r) => r.id === state.evalSelected) ? state.evalSelected : (action.runs[0]?.id ?? null);
+      return { ...state, evalRuns: action.runs, evalSelected: selected };
+    }
+
+    case "selectEvalRun":
+      return { ...state, evalSelected: action.id };
+
+    case "evalRunLoaded":
+      return { ...state, evalDetails: { ...state.evalDetails, [action.detail.id]: action.detail } };
 
     case "toast":
       return { ...state, toast: { id: state.nextId, message: action.message, kind: action.kind }, nextId: state.nextId + 1 };

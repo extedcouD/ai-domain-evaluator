@@ -3,7 +3,7 @@
  * editor, and the toast. Every side effect (fetch, timer, confirm, the DOM, the clock) lives HERE;
  * `state.ts` stays a pure fold, dispatched to with the results.
  */
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { del, encodeRef, get, post, put, type ApiError } from "./api";
 import { statusIndex, topicKey, topicRefFromFile } from "./derive";
@@ -22,6 +22,8 @@ import type {
   CoverageReportWithTree,
   CoverageSummary,
   DeletedEntry,
+  EvalRunDetail,
+  EvalRunSummary,
   HistoryData,
   Identity,
   Kind,
@@ -29,6 +31,7 @@ import type {
   NodeInfo,
   Proposal,
   ProposalDetail,
+  RunRequest,
   SyncResult,
   Topic,
 } from "./types";
@@ -39,6 +42,7 @@ import { HistoryPanel } from "./components/HistoryPanel";
 import { PathTree } from "./components/PathTree";
 import { ProposalsPanel } from "./components/ProposalsPanel";
 import { RequestAccessModal } from "./components/RequestAccessModal";
+import { RunView } from "./components/RunView";
 import { Toast } from "./components/Toast";
 import { TopicList } from "./components/TopicList";
 
@@ -46,12 +50,14 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 
 function hashView(): View | null {
   const h = window.location.hash.replace(/^#/, "").split("/")[0];
-  return h === "coverage" || h === "author" || h === "admin" ? h : null;
+  return h === "coverage" || h === "author" || h === "admin" || h === "evaluate" ? h : null;
 }
 
 export function App(): React.JSX.Element {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
   const inflight = useRef(new Set<string>());
+  const evalInflight = useRef(new Set<string>());
+  const [submittingRun, setSubmittingRun] = useState(false);
 
   // ---- loaders -----------------------------------------------------------------------------------
   const loadManifest = useCallback(async () => {
@@ -92,9 +98,60 @@ export function App(): React.JSX.Element {
     }
   }, []);
 
+  const loadEvalRuns = useCallback(async () => {
+    try {
+      const r = await get<{ runs: EvalRunSummary[] }>("/api/runs");
+      dispatch({ type: "evalRunsLoaded", runs: r.runs });
+    } catch {
+      /* best-effort — the list just won't refresh */
+    }
+  }, []);
+
+  const loadEvalRun = useCallback(async (id: string) => {
+    if (evalInflight.current.has(id)) return;
+    evalInflight.current.add(id);
+    try {
+      dispatch({ type: "evalRunLoaded", detail: await get<EvalRunDetail>(`/api/runs/${encodeURIComponent(id)}`) });
+    } catch {
+      /* leave it unloaded — the pane shows a loading state */
+    } finally {
+      evalInflight.current.delete(id);
+    }
+  }, []);
+
   const toast = useCallback((message: string, kind: "info" | "error" = "info") => {
     dispatch({ type: "toast", message, kind });
   }, []);
+
+  const submitRun = useCallback(
+    async (req: RunRequest): Promise<void> => {
+      setSubmittingRun(true);
+      try {
+        const r = await post<{ id: string }>("/api/runs", req);
+        toast("run started");
+        dispatch({ type: "selectEvalRun", id: r.id });
+        await loadEvalRuns();
+      } catch (err) {
+        dispatch({ type: "toast", message: errMsg(err), kind: "error" });
+      } finally {
+        setSubmittingRun(false);
+      }
+    },
+    [toast, loadEvalRuns],
+  );
+
+  const cancelEvalRun = useCallback(
+    async (id: string): Promise<void> => {
+      try {
+        await del(`/api/runs/${encodeURIComponent(id)}`);
+        toast("run canceled");
+        await Promise.all([loadEvalRuns(), loadEvalRun(id)]);
+      } catch (err) {
+        dispatch({ type: "toast", message: errMsg(err), kind: "error" });
+      }
+    },
+    [toast, loadEvalRuns, loadEvalRun],
+  );
 
   const loadHistory = useCallback(async () => {
     try {
@@ -181,6 +238,33 @@ export function App(): React.JSX.Element {
     if (state.runB) wanted.add(state.runB);
     for (const file of wanted) if (!state.reports[file]) void loadReport(file);
   }, [state.runs, state.runA, state.runB, state.reports, loadReport]);
+
+  // Evaluate view: fetch the run list on entry.
+  useEffect(() => {
+    if (state.view === "evaluate") void loadEvalRuns();
+  }, [state.view, loadEvalRuns]);
+
+  // Load the selected run's detail (its report) — on selection, and whenever its status transitions.
+  useEffect(() => {
+    const sel = state.evalSelected;
+    if (!sel) return;
+    const run = state.evalRuns.find((r) => r.id === sel);
+    if (!run) return;
+    const loaded = state.evalDetails[sel];
+    if (!loaded || loaded.status !== run.status) void loadEvalRun(sel);
+  }, [state.evalSelected, state.evalRuns, state.evalDetails, loadEvalRun]);
+
+  // Poll while any run is in flight: refresh the list and the selected running run's live progress.
+  useEffect(() => {
+    if (state.view !== "evaluate") return;
+    if (!state.evalRuns.some((r) => r.status === "running")) return;
+    const id = window.setInterval(() => {
+      void loadEvalRuns();
+      const sel = state.evalSelected;
+      if (sel && state.evalRuns.find((r) => r.id === sel)?.status === "running") void loadEvalRun(sel);
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [state.view, state.evalRuns, state.evalSelected, loadEvalRuns, loadEvalRun]);
 
   // Toast auto-dismiss.
   useEffect(() => {
@@ -614,6 +698,19 @@ export function App(): React.JSX.Element {
         ) : state.view === "coverage" ? (
           <main className="workspace">
             <CoverageView runs={state.runs} runA={state.runA} runB={state.runB} reports={state.reports} levels={state.manifest?.levels ?? []} dispatch={dispatch} />
+          </main>
+        ) : state.view === "evaluate" ? (
+          <main className="workspace">
+            <RunView
+              runs={state.evalRuns}
+              selected={state.evalSelected}
+              details={state.evalDetails}
+              levels={state.manifest?.levels ?? []}
+              submitting={submittingRun}
+              onSubmit={(req) => void submitRun(req)}
+              onCancel={(id) => void cancelEvalRun(id)}
+              dispatch={dispatch}
+            />
           </main>
         ) : (
           <main className="workspace">

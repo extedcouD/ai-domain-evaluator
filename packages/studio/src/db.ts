@@ -14,6 +14,8 @@
  */
 import { MongoClient, ObjectId, type Collection, type Db } from "mongodb";
 
+import type { CoverageReport, SerializedError } from "@evaluator/core";
+
 export { ObjectId };
 
 export type TopicKind = "real" | "canary";
@@ -137,6 +139,43 @@ export interface RevisionDoc {
   message: string;
 }
 
+export type EvalProvider = "openai" | "anthropic";
+
+export type EvalRunStatus = "running" | "succeeded" | "failed" | "canceled";
+
+/** The NON-SECRET echo of a run's transport config. The API key is deliberately absent — see EvalRunDoc. */
+export interface EvalEndpoint {
+  provider: EvalProvider;
+  baseUrl: string;
+  model: string;
+}
+
+/**
+ * One coverage evaluation a user kicked off from the dashboard: a probe of a user-supplied endpoint
+ * (the source) graded by a second user-supplied endpoint (the judge), run against the KB in a
+ * workspace. The API keys used to reach both endpoints live ONLY in the runner's memory for the run's
+ * lifetime and are NEVER written here — only the provider/baseUrl/model echo is. `report` is the
+ * finished `CoverageReport` (the same JSON the CLI writes to a file), embedded on success. Reads are
+ * scoped by `actor`; a run that outlives its process is reaped to `failed` on the next boot.
+ */
+export interface EvalRunDoc {
+  _id: string; // runId
+  actor: string; // owner email
+  workspace: string; // the KB workspace the run probed
+  subject: string;
+  manifestId: string;
+  manifestVersion: string;
+  status: EvalRunStatus;
+  source: EvalEndpoint;
+  judge: EvalEndpoint;
+  progress: { done: number; total: number };
+  report: CoverageReport | null; // embedded on success
+  error: SerializedError | null; // set on failure
+  createdAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+}
+
 /** The connected database plus typed accessors for every collection. */
 export interface DbHandle {
   client: MongoClient;
@@ -146,6 +185,7 @@ export interface DbHandle {
   config: Collection<AccessDoc>;
   revisions: Collection<RevisionDoc>;
   accessRequests: Collection<AccessRequestDoc>;
+  evalRuns: Collection<EvalRunDoc>;
   close(): Promise<void>;
 }
 
@@ -162,6 +202,7 @@ export async function connectDb(uri: string, dbName: string): Promise<DbHandle> 
     config: db.collection<AccessDoc>("config"),
     revisions: db.collection<RevisionDoc>("revisions"),
     accessRequests: db.collection<AccessRequestDoc>("accessRequests"),
+    evalRuns: db.collection<EvalRunDoc>("evalRuns"),
     close: () => client.close(),
   };
 }
@@ -188,4 +229,6 @@ export async function ensureIndexes(h: DbHandle): Promise<void> {
   // At most one OPEN request per email (submitting again upserts); the status/date index feeds the admin queue.
   await h.accessRequests.createIndex({ email: 1 }, { unique: true, partialFilterExpression: { status: "pending" } });
   await h.accessRequests.createIndex({ status: 1, createdAt: -1 });
+  // The dashboard lists a user's own runs newest-first; this index serves both that and the admin `?all=1` scan.
+  await h.evalRuns.createIndex({ actor: 1, createdAt: -1 });
 }

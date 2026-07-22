@@ -100,6 +100,55 @@ export interface NodeInfo {
   hasTopics: boolean;
 }
 
+// ---- eval runs (running a coverage probe from the dashboard) -------------------------------------
+
+export type EvalProvider = "openai" | "anthropic";
+export type EvalRunStatus = "running" | "succeeded" | "failed" | "canceled";
+
+/** The non-secret echo of a run's transport config (no API key ever crosses the wire back). */
+export interface EvalEndpoint {
+  provider: EvalProvider;
+  baseUrl: string;
+  model: string;
+}
+
+/** A serialized engine error, as `GET /api/runs` reports it on a failed run. */
+export interface RunError {
+  name: string;
+  message: string;
+}
+
+/** A run as the list endpoint returns it — status, progress, headline numbers, but no report body. */
+export interface EvalRunSummary {
+  id: string;
+  actor: string;
+  status: EvalRunStatus;
+  workspace: string;
+  subject: string;
+  manifestId: string;
+  manifestVersion: string;
+  source: EvalEndpoint;
+  judge: EvalEndpoint;
+  progress: { done: number; total: number };
+  totals: Totals | null;
+  metrics: Metrics | null;
+  error: RunError | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+/** `GET /api/runs/<id>` — a summary plus the embedded report (with its per-level `tree`) once finished. */
+export interface EvalRunDetail extends EvalRunSummary {
+  report: CoverageReportWithTree | null;
+}
+
+/** The payload `POST /api/runs` accepts. `apiKey`s are sent once and never stored server-side. */
+export interface RunRequest {
+  source: EvalEndpoint & { apiKey: string; temperature?: number };
+  judge: EvalEndpoint & { apiKey: string; temperature?: number };
+}
+
 /** One commit, as `GET /api/history` returns it (the History tab). */
 export interface HistoryEntry {
   sha: string;

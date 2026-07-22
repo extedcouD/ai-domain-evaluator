@@ -86,7 +86,7 @@ function Footer({ report }: { report: CoverageReportWithTree }): React.JSX.Eleme
   );
 }
 
-function SingleReport({ report, levels }: { report: CoverageReportWithTree; levels: string[] }): React.JSX.Element {
+export function SingleReport({ report, levels }: { report: CoverageReportWithTree; levels: string[] }): React.JSX.Element {
   const { metrics: m, totals: t } = report;
   return (
     <>

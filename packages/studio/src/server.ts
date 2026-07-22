@@ -36,12 +36,14 @@ import {
 import { countPending, getRequest, listPending, pendingFor, resolveRequest, submitRequest } from "./access-requests";
 import { readPolicy, seedPolicy, writePolicy } from "./access-store";
 import { DEFAULT_ACTOR, makeActorResolver, type Actor } from "./actor";
-import { connectDb, ensureIndexes, type DbHandle, type TopicSnapshot, type WorkspaceMeta } from "./db";
+import { connectDb, ensureIndexes, type DbHandle, type EvalRunDoc, type TopicSnapshot, type WorkspaceMeta } from "./db";
 import { appendRevision, getRevision, listDeletions, listHistory } from "./history";
+import type { EndpointConfig } from "./llm-factory";
 import { declaredLevels, parseTopic, renderManifestYaml, SEGMENT_RE, TOPIC_ID_RE } from "./manifest-folder";
 import { mergeToMain, resolveConflict, syncFromMain } from "./merge";
 import { importKb } from "./migrate";
 import { getProposal, listProposals, requestReview, withdrawReview } from "./proposals";
+import { EvalRunner, TooManyRuns } from "./runner";
 import { atomicWrite, docToTopic, HashConflict, MAIN, ManifestStore, topicKeyOf } from "./store";
 import { ensureUserWorkspace, intendedWorkspace, loginSlug, readWorkspace } from "./workspaces";
 
@@ -96,6 +98,7 @@ class Forbidden extends Error {}
 interface Ctx {
   db: DbHandle;
   store: ManifestStore;
+  runner: EvalRunner;
   mutex: Mutex;
   coverageDir: string;
   exportDir: string;
@@ -104,9 +107,14 @@ interface Ctx {
 }
 
 export function createStudioServer(opts: StudioOptions): Server {
+  const store = new ManifestStore(opts.db);
+  const runner = new EvalRunner(opts.db, store);
+  // A run that outlived a previous process left a stale `running` doc (its keys are gone); reap it.
+  void runner.reapOrphans();
   const ctx: Ctx = {
     db: opts.db,
-    store: new ManifestStore(opts.db),
+    store,
+    runner,
     mutex: new Mutex(),
     coverageDir: opts.coverageDir,
     exportDir: opts.exportDir,
@@ -207,6 +215,12 @@ async function handleKb(req: IncomingMessage, res: ServerResponse, ctx: Ctx, met
   if (method === "DELETE" && path.startsWith("/api/nodes/")) return await deleteNode(req, res, ctx, path);
   if (method === "GET" && path === "/api/history") return await getHistory(req, res, ctx);
   if (method === "POST" && path === "/api/restore") return await postRestore(req, res, ctx);
+
+  // Eval runs — kick off a coverage probe against a user-supplied endpoint and read the results back.
+  if (method === "POST" && path === "/api/runs") return await postRun(req, res, ctx);
+  if (method === "GET" && path === "/api/runs") return await getRuns(req, res, ctx);
+  if (method === "GET" && path.startsWith("/api/runs/")) return await getRun(req, res, ctx, path);
+  if (method === "DELETE" && path.startsWith("/api/runs/")) return await deleteRun(req, res, ctx, path);
 
   // Review flow.
   if (method === "POST" && path === "/api/proposals") return await postProposal(req, res, ctx);
@@ -717,6 +731,106 @@ function getCoverage(req: IncomingMessage, res: ServerResponse, coverageDir: str
   const report = JSON.parse(readFileSync(p, "utf8")) as CoverageReport;
   const wantTree = new URL(req.url ?? "", "http://localhost").searchParams.get("tree") === "1";
   sendJson(res, 200, wantTree ? { ...report, tree: rollup(report).root } : report);
+}
+
+// ---- eval runs (run a coverage probe against a user endpoint) -----------------------------------
+
+/** Validate one endpoint block from a run body into an `EndpointConfig` (secret included). */
+function parseEndpoint(raw: unknown, label: string): EndpointConfig {
+  if (raw === null || typeof raw !== "object") throw new BadRequest(`${label} config is required`);
+  const o = raw as Record<string, unknown>;
+
+  const provider = o["provider"];
+  if (provider !== "openai" && provider !== "anthropic") throw new BadRequest(`${label} provider must be "openai" or "anthropic"`);
+
+  const baseUrl = o["baseUrl"];
+  // Same guard the env schema applies: bare "localhost:8000" parses as scheme "localhost:", so require http(s).
+  if (typeof baseUrl !== "string" || !/^https?:\/\//i.test(baseUrl)) throw new BadRequest(`${label} baseUrl must be an http(s) URL, e.g. https://api.example.com`);
+  try {
+    new URL(baseUrl);
+  } catch {
+    throw new BadRequest(`${label} baseUrl is not a valid URL`);
+  }
+
+  const model = o["model"];
+  if (typeof model !== "string" || model.trim() === "") throw new BadRequest(`${label} model is required`);
+
+  const apiKey = o["apiKey"];
+  if (typeof apiKey !== "string" || apiKey === "") throw new BadRequest(`${label} apiKey is required (any non-empty string works for a keyless local server)`);
+
+  const cfg: EndpointConfig = { provider, baseUrl, model: model.trim(), apiKey };
+  const temperature = o["temperature"];
+  if (typeof temperature === "number" && temperature >= 0 && temperature <= 2) cfg.temperature = temperature;
+  return cfg;
+}
+
+/** A run doc as the dashboard lists it: identity, status, progress, and headline numbers — never the report body or a key. */
+function runSummary(d: EvalRunDoc): Record<string, unknown> {
+  return {
+    id: d._id,
+    actor: d.actor,
+    status: d.status,
+    workspace: d.workspace,
+    subject: d.subject,
+    manifestId: d.manifestId,
+    manifestVersion: d.manifestVersion,
+    source: d.source,
+    judge: d.judge,
+    progress: d.progress,
+    totals: d.report?.totals ?? null,
+    metrics: d.report?.metrics ?? null,
+    error: d.error,
+    createdAt: d.createdAt.toISOString(),
+    startedAt: d.startedAt?.toISOString() ?? null,
+    finishedAt: d.finishedAt?.toISOString() ?? null,
+  };
+}
+
+async function postRun(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const body = await readBody(req);
+  const source = parseEndpoint(body["source"], "source");
+  const judge = parseEndpoint(body["judge"], "judge");
+  // The run probes the KB as THIS user sees it in Studio (an author's own copy, or main).
+  const { actor, ws } = await resolveRead(ctx, req);
+  try {
+    const id = await ctx.runner.start({ actor: actor.email, workspace: ws, source, judge });
+    sendJson(res, 202, { id, status: "running" });
+  } catch (err) {
+    if (err instanceof TooManyRuns) return sendJson(res, 429, { error: err.message });
+    throw err; // ConfigError (empty/invalid KB) → 422 via sendError
+  }
+}
+
+async function getRuns(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const { actor, policy } = await resolveRead(ctx, req);
+  const all = new URL(req.url ?? "", "http://localhost").searchParams.get("all") === "1" && isAccessAdmin(policy, actor.email);
+  const filter = all ? {} : { actor: actor.email };
+  const docs = await ctx.db.evalRuns.find(filter).sort({ createdAt: -1 }).limit(100).toArray();
+  sendJson(res, 200, { runs: docs.map(runSummary) });
+}
+
+async function getRun(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const id = refSegments(path, "/api/runs/")[0];
+  if (!id) throw new BadRequest("bad run id");
+  const { actor, policy } = await resolveRead(ctx, req);
+  const doc = await ctx.db.evalRuns.findOne({ _id: id });
+  if (!doc) throw new NotFound("no such run");
+  if (doc.actor !== actor.email && !isAccessAdmin(policy, actor.email)) throw new Forbidden("this run belongs to someone else");
+  // On success, attach the per-level rollup + a generatedAt, so the client feeds the exact same shape
+  // the file-based viewer renders (see getCoverage).
+  const report = doc.report ? { ...doc.report, generatedAt: doc.finishedAt?.toISOString() ?? "", tree: rollup(doc.report).root } : null;
+  sendJson(res, 200, { ...runSummary(doc), report });
+}
+
+async function deleteRun(req: IncomingMessage, res: ServerResponse, ctx: Ctx, path: string): Promise<void> {
+  const id = refSegments(path, "/api/runs/")[0];
+  if (!id) throw new BadRequest("bad run id");
+  const { actor, policy } = await resolveRead(ctx, req);
+  const doc = await ctx.db.evalRuns.findOne({ _id: id });
+  if (!doc) throw new NotFound("no such run");
+  if (doc.actor !== actor.email && !isAccessAdmin(policy, actor.email)) throw new Forbidden("this run belongs to someone else");
+  const wasLive = ctx.runner.cancel(id);
+  sendJson(res, 200, { ok: true, status: wasLive ? "canceled" : doc.status });
 }
 
 // ---- static front-end ---------------------------------------------------------------------------

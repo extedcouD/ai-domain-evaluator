@@ -104,6 +104,12 @@ importers:
       '@evaluator/core':
         specifier: workspace:*
         version: link:../core
+      '@evaluator/provider-anthropic':
+        specifier: workspace:*
+        version: link:../provider-anthropic
+      '@evaluator/provider-openai':
+        specifier: workspace:*
+        version: link:../provider-openai
       async-mutex:
         specifier: ^0.5.0
         version: 0.5.0

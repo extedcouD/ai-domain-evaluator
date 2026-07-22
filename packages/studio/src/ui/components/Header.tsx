@@ -46,11 +46,12 @@ export function Header(props: {
 }): React.JSX.Element {
   const { view, manifest, dispatch, identity } = props;
   const topicCount = manifest?.topics.length ?? 0;
-  const dateRight = view === "coverage" ? "Coverage run" : view === "admin" ? "Admin" : `Authoring · ${String(topicCount)} topics`;
-  // The Admin tab is admin-only (mirrors the review gate). Everyone sees Author/Coverage.
+  const dateRight =
+    view === "coverage" ? "Coverage run" : view === "evaluate" ? "Evaluate" : view === "admin" ? "Admin" : `Authoring · ${String(topicCount)} topics`;
+  // The Admin tab is admin-only (mirrors the review gate). Everyone sees Author/Coverage/Evaluate.
   const isAdmin = identity?.role === "admin";
-  const views: View[] = isAdmin ? ["author", "coverage", "admin"] : ["author", "coverage"];
-  const viewLabel: Record<View, string> = { author: "Author", coverage: "Coverage", admin: "Admin" };
+  const views: View[] = isAdmin ? ["author", "coverage", "evaluate", "admin"] : ["author", "coverage", "evaluate"];
+  const viewLabel: Record<View, string> = { author: "Author", coverage: "Coverage", evaluate: "Evaluate", admin: "Admin" };
   const pendingRequests = identity?.pendingRequests ?? 0;
   // A read-only viewer in a multi-user deployment can ask for write access.
   const canRequestAccess = identity?.review === true && identity.role === "viewer";
